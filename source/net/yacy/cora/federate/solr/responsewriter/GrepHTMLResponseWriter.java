@@ -1,7 +1,7 @@
 /**
  *  GrepHTMLResponseWriter
  *  Copyright 2013 by Michael Peter Christen
- *  First released 09.06.2013 at http://yacy.net
+ *  First released 09.06.2013 at https://yacy.net
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -244,8 +244,7 @@ public class GrepHTMLResponseWriter implements QueryResponseWriter, SolrjRespons
 	private void writeApiLink(final Writer writer, final SolrParams solrParams) throws IOException {
         final NamedList<Object> paramsList = solrParams.toNamedList();
         paramsList.remove("wt");
-        @SuppressWarnings("deprecation")
-        String xmlquery = dqp.matcher("select?" + SolrParams.toSolrParams(paramsList).toString()).replaceAll("%22");
+        String xmlquery = dqp.matcher("select?" + paramsList.toSolrParams().toString()).replaceAll("%22");
         
 		writer.write("<div id=\"api\"><a href=\"" + xmlquery + "\"><img src=\"../env/grafics/api.png\" width=\"60\" height=\"40\" alt=\"API\" /></a>\n");
 		writer.write("<span>This search result can also be retrieved as XML. Click the API icon to see an example call to the search rss API.</span></div>\n");

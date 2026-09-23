@@ -217,7 +217,7 @@
     #%env/templates/submenuIndexCreate.template%#
 
 <div id="api">
-<a href="https://wiki.yacy.net/index.php/Dev:APICrawler" id="apilink" target="_blank"><img src="env/grafics/api.png" width="60" height="40" alt="API"/></a>
+<a href="https://yacy.net/api/crawler/" id="apilink" target="_blank"><img src="env/grafics/api.png" width="60" height="40" alt="API"/></a>
 <span>Click on this API button to see a documentation of the POST request parameter for crawl starts.</span>
 </div>
 
@@ -274,9 +274,80 @@
           </dl>
         </fieldset>
         <fieldset>
+          <legend>Index Attributes</legend>
+          <dl>
+
+          <dt><label for="collection">Add Crawl result to collection<br>(important for Index Pack generation)</label></dt>
+          <dd>
+            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
+            A crawl result can be tagged with names which are candidates for a collection request.
+            These tags can be selected with the <a href="gsa/search?q=www&site=#[collection]#">GSA interface</a> using the 'site' operator.
+            To use this option, the 'collection_sxt'-field must be switched on in the <a href="IndexFederated_p.html">Solr Schema</a>
+            </span></span>
+            <input name="collection" id="collection" type="text" size="60" maxlength="100" value="#[collection]#" #(collectionEnabled)#disabled="disabled"::#(/collectionEnabled)# /><br>Do not use underline '_' in collection name, use '-' instead. When useful, add a language code to the collection name, e.g. 'top-100-en'.
+          </dd>
+
+          <dt><label for="collection">Time Zone Offset</label></dt>
+          <dd>
+            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
+            The time zone is required when the parser detects a date in the crawled web page. Content can be searched with the on: - modifier which
+            requires also a time zone when a query is made. To normalize all given dates, the date is stored in UTC time zone. To get the right offset
+            from dates without time zones to UTC, this offset must be given here.  The offset is given in minutes;
+            Time zone offsets for locations east of UTC must be negative; offsets for zones west of UTC must be positve.
+            </span></span>
+            <input id="timezoneOffset" type="text" size="4" maxlength="4" name="timezoneOffset" value=""><script>document.getElementById("timezoneOffset").value = new Date().getTimezoneOffset();</script>
+          </dd>
+
+          </dl>
+        </fieldset>
+        <fieldset>
           <legend>Crawler Filter</legend>
           <p>These are limitations on the crawl stacker. The filters will be applied before a web page is loaded.</p>
+
           <dl>
+          <dt>Indexing</dt>
+          <dd>
+            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
+            This enables indexing of the webpages the crawler will download. This should be switched on by default, unless you want to crawl only to fill the
+            Document Cache without indexing.
+            </span></span>
+            <label for="indexText">index text</label>:
+            <input type="checkbox" name="indexText" id="indexText" #(indexingTextChecked)#::checked="checked"#(/indexingTextChecked)# />&nbsp;&nbsp;&nbsp;
+            <label for="indexMedia">index media</label>:
+            <input type="checkbox" name="indexMedia" id="indexMedia" #(indexingMediaChecked)#::checked="checked"#(/indexingMediaChecked)# />
+          </dd>
+          #(remoteindexing)#::
+          <dt><label for="crawlOrder">Do Remote Indexing</label></dt>
+          <dd>
+            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
+            If checked, the crawler will contact other peers and use them as remote indexers for your crawl.
+            If you need your crawling results locally, you should switch this off.
+            Only senior and principal peers can initiate or receive remote crawls.
+            <strong>A YaCyNews message will be created to inform all peers about a global crawl</strong>,
+            so they can omit starting a crawl with the same start point.
+            </span></span>
+            <table style="border-width: 0px">
+              #(remoteCrawlerDisabled)#::
+              <tr #(crawlOrderChecked)#class="hidden"::#(/crawlOrderChecked)# id="remoteCrawlerDisabledInfo">
+                  <td colspan="2"><div class="info"><p>Remote crawl results won't be added to the local index as the remote crawler is disabled on this peer.</p>
+                            <p>You can activate it in the <a href="RemoteCrawl_p.html">Remote Crawl Configuration</a> page.</p></div>
+                </td>
+              </tr>
+              #(/remoteCrawlerDisabled)#
+              <tr>
+                <td>
+                  <input type="checkbox" name="crawlOrder" id="crawlOrder" #(crawlOrderChecked)#::checked="checked"#(/crawlOrderChecked)#/>
+                </td>
+                <td>
+                  <label for="intention">Describe your intention to start this global crawl (optional)</label>:<br />
+                  <input name="intention" id="intention" type="text" size="40" maxlength="100" value="#[intention]#" /><br />
+                  This message will appear in the 'Other Peer Crawl Start' table of other peers.
+                </td>
+              </tr>
+            </table>
+          </dd>
+          #(/remoteindexing)#
+
           <dt>Crawling Depth</dt>
           <dd>
             <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
@@ -412,6 +483,9 @@
             <table style="border-width: 0px">
             <tr><td style="width:110px"><img src="env/grafics/plus.gif" alt=""> must-match</td><td><input name="indexmustmatch" id="indexmustmatch" type="text" size="55" maxlength="100000" value="#[indexmustmatch]#" onblur="if (this.value=='') this.value='.*';"/> (must not be empty)</td></tr>
             <tr><td><img src="env/grafics/minus.gif" alt=""> must-not-match</td><td><input name="indexmustnotmatch" id="indexmustnotmatch" type="text" size="55" maxlength="100000" value="#[indexmustnotmatch]#" /></td></tr>
+            <tr>
+              <td colspan="2"><input type="checkbox" name="noindexWhenCanonicalUnequalURL" id="noindexWhenCanonicalUnequalURL" #(noindexWhenCanonicalUnequalURLChecked)#::checked="checked"#(/noindexWhenCanonicalUnequalURLChecked)#/> No Indexing when Canonical present and Canonical != URL</td>
+            </tr>
             </table>
             </dd>
             <dt>Filter on Content of Document<br/>(all visible text, including camel-case-tokenized url and title)</dt>
@@ -470,7 +544,7 @@
                     <tr>
                         <td style="width:110px"><img src="env/grafics/minus.gif" alt=""> must-not-match</td>
                         <td>
-                            <input name="indexSolrQueryMustNotMatch" id="indexSolrQueryMustNotMatch" type="text" size="55" maxlength="100000" value="#[indexSolrQueryMustNotMatch]#" aria-describedby="indexSolrQueryInfo" />
+                            <input name="indexSolrQueryMustNotMatch" id="indexSolrQueryMustNotMatch" type="text" size="55" maxlength="100000" value="#[indexSolrQueryMustNotMatch]#" aria-describedby="indexSolrQueryInfo" enabled="false"/>
                         </td>
                     </tr>
                     #(/embeddedSolrConnected)#
@@ -480,12 +554,24 @@
         </fieldset>
         <fieldset>
           <legend>Content Filter</legend>
-          <p>These are limitations on parts of a document. The filter will be applied after a web page was loaded.</p>
+          <p>These are limitations on parts of a document. The filter will be applied after a web page was loaded.
+          You can choose to:</p>
           <dl>
+            <dt>Evaluate by default</dt>
+            <dd><input type="radio" name="default_valency" id="default_valency_eval" value="EVAL" #(default_valency_eval)#::checked="checked"#(/default_valency_eval)#/>
+            Use all words in document by default until a CSS class as listed below appears; then ignore all
+            </dd>
+            <dt>Ignore by default</dt>
+            <dd><input type="radio" name="default_valency" id="default_valency_ignore" value="IGNORE" #(default_valency_ignore)#::checked="checked"#(/default_valency_ignore)#/>
+            Ignore all words in document by default until a CSS class as listed below appears, then evaluate all
+            </dd>
             <dt>Filter div or nav class names</dt>
             <dd>
             <table style="border-width: 0px">
-            <tr><td style="width:110px">set of CSS class names</td><td><input name="ignoreclassname" id="ignoreclassname" type="text" size="55" maxlength="100000" value="#[ignoreclassname]#" onblur="if (this.value=='') this.value='';"/></td><td>comma-separated list of &lt;div&gt; or &lt;nav&gt; element class names which should be filtered out</td></tr>
+              <tr>
+                <td><input name="valency_switch_tag_names" id="valency_switch_tag_names" type="text" size="55" maxlength="100000" value="#[valency_switch_tag_names]#" onblur="if (this.value=='') this.value='';"/></td>
+                <td>comma-separated list of &lt;div&gt; or &lt;nav&gt; element class names which should be filtered out/in according to switch above.</td>
+              </tr>
             </table>
             </dd>
           </dl>
@@ -619,111 +705,6 @@
           </dl>
         </fieldset>
         #(/vocabularySelect)#
-
-        <fieldset>
-          <legend>Snapshot Creation</legend>
-          <dl>
-          <dt><label>Max Depth for Snapshots</label></dt>
-          <dd>
-            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
-            Snapshots are xml metadata and pictures of web pages that can be created during crawling time.
-            The xml data is stored in the same way as a Solr search result with one hit and the pictures will be stored as pdf into subdirectories
-            of HTCACHE/snapshots/. From the pdfs the jpg thumbnails are computed. Snapshot generation can be controlled using a depth parameter; that
-            means a snapshot is only be generated if the crawl depth of a document is smaller or equal to the given number here. If the number is set to -1,
-            no snapshots are generated.
-            </span></span>
-            <input type="text" name="snapshotsMaxDepth" id="snapshotsMaxDepth" size="2" maxlength="2" value="#[snapshotsMaxDepth]#" />
-          </dd>
-          <dt><label>Multiple Snapshot Versions</label></dt>
-          <dd>
-            <input type="radio" name="snapshotsReplaceOld" value="on" checked="checked"/> replace old snapshots with new one&nbsp;&nbsp;&nbsp;
-            <input type="radio" name="snapshotsReplaceOld" value="off" /> add new versions for each crawl
-          </dd>
-          <dt><label for="snapshotsMustnotmatch">must-not-match filter for snapshot generation</label></dt>
-          <dd><input name="snapshotsMustnotmatch" id="snapshotsMustnotmatch" type="text" size="55" maxlength="100000" value="#[snapshotsMustnotmatch]#" /></dd>
-          #(snapshotEnableImages)#
-          <input type="hidden" name="snapshotsLoadImage" id="snapshotsLoadImage" value="false"/>
-          <dt><label>Image Creation</label></dt>
-          <dd>
-            <div class="info">Only XML snapshots can be generated. as the <a href="https://wkhtmltopdf.org/" target="_blank">wkhtmltopdf</a> util is not found by YaCy on your system.
-                            It is required to generate PDF snapshots from crawled pages that can then be converted to images.</div>
-          </dd>::
-          <dt><label>Image Creation</label></dt>
-          <dd>
-            <input type="checkbox" name="snapshotsLoadImage" id="snapshotsLoadImage"#(snapshotsLoadImageChecked)#:: checked="checked"#(/snapshotsLoadImageChecked)#/>
-          </dd>
-          #(/snapshotEnableImages)#
-          </dl>
-        </fieldset>
-        <fieldset>
-          <legend>Index Attributes</legend>
-          <dl>
-          <dt>Indexing</dt>
-          <dd>
-            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
-            This enables indexing of the webpages the crawler will download. This should be switched on by default, unless you want to crawl only to fill the
-            Document Cache without indexing.
-            </span></span>
-            <label for="indexText">index text</label>:
-            <input type="checkbox" name="indexText" id="indexText" #(indexingTextChecked)#::checked="checked"#(/indexingTextChecked)# />&nbsp;&nbsp;&nbsp;
-            <label for="indexMedia">index media</label>:
-            <input type="checkbox" name="indexMedia" id="indexMedia" #(indexingMediaChecked)#::checked="checked"#(/indexingMediaChecked)# />
-          </dd>
-          #(remoteindexing)#::
-          <dt><label for="crawlOrder">Do Remote Indexing</label></dt>
-          <dd>
-            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
-            If checked, the crawler will contact other peers and use them as remote indexers for your crawl.
-            If you need your crawling results locally, you should switch this off.
-            Only senior and principal peers can initiate or receive remote crawls.
-            <strong>A YaCyNews message will be created to inform all peers about a global crawl</strong>,
-            so they can omit starting a crawl with the same start point.
-            </span></span>
-            <table style="border-width: 0px">
-              #(remoteCrawlerDisabled)#::
-              <tr #(crawlOrderChecked)#class="hidden"::#(/crawlOrderChecked)# id="remoteCrawlerDisabledInfo">
-                  <td colspan="2"><div class="info"><p>Remote crawl results won't be added to the local index as the remote crawler is disabled on this peer.</p>
-                            <p>You can activate it in the <a href="RemoteCrawl_p.html">Remote Crawl Configuration</a> page.</p></div>
-                </td>
-              </tr>
-              #(/remoteCrawlerDisabled)#
-              <tr>
-                <td>
-                  <input type="checkbox" name="crawlOrder" id="crawlOrder" #(crawlOrderChecked)#::checked="checked"#(/crawlOrderChecked)#/>
-                </td>
-                <td>
-                  <label for="intention">Describe your intention to start this global crawl (optional)</label>:<br />
-                  <input name="intention" id="intention" type="text" size="40" maxlength="100" value="#[intention]#" /><br />
-                  This message will appear in the 'Other Peer Crawl Start' table of other peers.
-                </td>
-              </tr>
-            </table>
-          </dd>
-          #(/remoteindexing)#
-
-          <dt><label for="collection">Add Crawl result to collection(s)</label></dt>
-          <dd>
-            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
-            A crawl result can be tagged with names which are candidates for a collection request.
-            These tags can be selected with the <a href="gsa/search?q=www&site=#[collection]#">GSA interface</a> using the 'site' operator.
-            To use this option, the 'collection_sxt'-field must be switched on in the <a href="IndexFederated_p.html">Solr Schema</a>
-            </span></span>
-            <input name="collection" id="collection" type="text" size="60" maxlength="100" value="#[collection]#" #(collectionEnabled)#disabled="disabled"::#(/collectionEnabled)# />
-          </dd>
-
-          <dt><label for="collection">Time Zone Offset</label></dt>
-          <dd>
-            <span class="info" style="float:right"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span style="right:0px;">
-            The time zone is required when the parser detects a date in the crawled web page. Content can be searched with the on: - modifier which
-            requires also a time zone when a query is made. To normalize all given dates, the date is stored in UTC time zone. To get the right offset
-            from dates without time zones to UTC, this offset must be given here.  The offset is given in minutes;
-            Time zone offsets for locations east of UTC must be negative; offsets for zones west of UTC must be positve.
-            </span></span>
-            <input id="timezoneOffset" type="text" size="4" maxlength="4" name="timezoneOffset" value=""><script>document.getElementById("timezoneOffset").value = new Date().getTimezoneOffset();</script>
-          </dd>
-
-          </dl>
-        </fieldset>
 
         <dl>
           <dt><input type="hidden" name="crawlingstart" value="1"/><input type="submit" value="Start New Crawl Job" class="btn btn-primary"/></dt><dd></dd>

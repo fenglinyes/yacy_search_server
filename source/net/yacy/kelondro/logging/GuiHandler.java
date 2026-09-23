@@ -43,7 +43,7 @@ import net.yacy.kelondro.util.MemoryControl;
 
 public class GuiHandler extends Handler {
 
-    private final static int DEFAULT_SIZE = 1000; // don't make this too big, it eats up a lot of memory!
+    private final static int DEFAULT_SIZE = 100000; // don't make this too big, it eats up a lot of memory!
     private static int size = DEFAULT_SIZE;
     private static String buffer[];
     private static int start, count;
@@ -86,11 +86,11 @@ public class GuiHandler extends Handler {
     }
 
     public final int getSize() {
-    	return GuiHandler.size;
+        return GuiHandler.size;
     }
 
     @Override
-    public final void publish(final LogRecord record) {
+    public final synchronized void publish(final LogRecord record) {
         if (!this.isLoggable(record)) return;
         final int ix = (GuiHandler.start + GuiHandler.count) % GuiHandler.buffer.length;
         GuiHandler.buffer[ix] = this.getFormatter().format(record);

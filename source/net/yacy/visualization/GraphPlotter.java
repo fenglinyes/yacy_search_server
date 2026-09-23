@@ -1,7 +1,7 @@
 /**
  *  GraphPlotter
  *  Copyright 2007 by Michael Christen
- *  First released 22.05.2007 at http://yacy.net
+ *  First released 22.05.2007 at https://yacy.net
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -324,7 +324,7 @@ public class GraphPlotter implements Cloneable {
             image.setColor(c.layer == 0 ? color_dot0_l : color_dota_l);
             image.dot(x, y, 6, true, 100);
             image.setColor(color_text_l);
-            PrintTool.print(image, x, y + 10, 0, name.toUpperCase(), 0 /*x < 2 * width / 5 ? 1 : x > 3 * width / 5 ? -1 : 0*/, 100);
+            PrintTool.print5(image, x, y + 10, 0, name.toUpperCase(), 0 /*x < 2 * width / 5 ? 1 : x > 3 * width / 5 ? -1 : 0*/, 100);
         }
 
         // draw lines

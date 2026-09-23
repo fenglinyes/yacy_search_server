@@ -1,20 +1,20 @@
 /**
  *  MediawikiImporter
  *  Copyright 2008 by Michael Peter Christen
- *  First released 20.11.2008 at http://yacy.net
- *
+ *  First released 20.11.2008 at https://yacy.net
+ * <p>
  *  This is a part of YaCy, a peer-to-peer based web search engine
- *
+ * <p>
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
  *  License as published by the Free Software Foundation; either
  *  version 2.1 of the License, or (at your option) any later version.
- *
+ * <p>
  *  This library is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
- *
+ * <p>
  *  You should have received a copy of the GNU Lesser General Public License
  *  along with this program in the file lgpl21.txt
  *  If not, see <http://www.gnu.org/licenses/>.
@@ -52,6 +52,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.zip.GZIPInputStream;
 
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+
 import net.yacy.cora.document.encoding.UTF8;
 import net.yacy.cora.document.id.AnchorURL;
 import net.yacy.cora.document.id.DigestURL;
@@ -67,10 +69,9 @@ import net.yacy.document.Document;
 import net.yacy.document.Parser;
 import net.yacy.document.TextParser;
 import net.yacy.document.VocabularyScraper;
-import net.yacy.document.content.SurrogateReader;
+import net.yacy.document.content.XMLPackReader;
+import net.yacy.document.parser.html.TagValency;
 import net.yacy.kelondro.util.NamePrefixThreadFactory;
-
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 
 
 /*
@@ -101,11 +102,11 @@ public class MediawikiImporter extends Thread implements Importer {
 
 
     public MediawikiImporter(final MultiProtocolURL sourcefile, final File targetdir) {
-    	super("MediawikiImporter(" + sourcefile != null ? sourcefile.toNormalform(true) : "null sourcefile" +")");
-    	this.sourcefile = sourcefile;
-    	this.docsize = sourcefile.length();
-    	this.approxdocs = (int) (this.docsize * docspermbinxmlbz2 / 1024L / 1024L);
-    	this.targetdir = targetdir;
+        super("MediawikiImporter(" + sourcefile != null ? sourcefile.toNormalform(true) : "null sourcefile" +")");
+        this.sourcefile = sourcefile;
+        this.docsize = sourcefile.length();
+        this.approxdocs = (int) (this.docsize * docspermbinxmlbz2 / 1024L / 1024L);
+        this.targetdir = targetdir;
         this.count = 0;
         this.start = 0;
         this.hostport = null;
@@ -137,7 +138,7 @@ public class MediawikiImporter extends Thread implements Importer {
     @Override
     public int speed() {
         if (this.count == 0) return 0;
-        return (int) (this.count / Math.max(1L, runningTime() ));
+        return (int) (this.count / Math.max(1L, this.runningTime() ));
     }
 
     /**
@@ -145,7 +146,7 @@ public class MediawikiImporter extends Thread implements Importer {
      */
     @Override
     public long remainingTime() {
-        return Math.max(0, this.approxdocs - this.count) / Math.max(1, speed() );
+        return Math.max(0, this.approxdocs - this.count) / Math.max(1, this.speed() );
     }
 
     @Override
@@ -153,14 +154,15 @@ public class MediawikiImporter extends Thread implements Importer {
         return (System.currentTimeMillis() - this.start) / 1000L;
     }
 
+    @SuppressWarnings("resource")
     @Override
     public void run() {
         this.start = System.currentTimeMillis();
         final int threads = Math.max(2, Runtime.getRuntime().availableProcessors() - 1);
         // out keeps a outputfile open until poisened, to make sure underlaying thread gets the end condition
         // regardless of any exception (e.g. eof memory) a add(poison) is added to the most outer final block
-        final BlockingQueue<wikiparserrecord> out = new ArrayBlockingQueue<wikiparserrecord>(threads * 10);
-        final wikiparserrecord poison = newRecord();
+        final BlockingQueue<wikiparserrecord> out = new ArrayBlockingQueue<>(threads * 10);
+        final wikiparserrecord poison = this.newRecord();
         BufferedReader reader = null;
         try {
             String targetstub = this.sourcefile.getFileName();
@@ -177,9 +179,9 @@ public class MediawikiImporter extends Thread implements Importer {
             StringBuilder sb = new StringBuilder();
             boolean page = false, text = false;
             String title = null;
-            final BlockingQueue<wikiparserrecord> in = new ArrayBlockingQueue<wikiparserrecord>(threads * 10);
-			final ExecutorService service = Executors.newCachedThreadPool(
-					new NamePrefixThreadFactory(MediawikiImporter.class.getSimpleName() + ".convertConsumer"));
+            final BlockingQueue<wikiparserrecord> in = new ArrayBlockingQueue<>(threads * 10);
+            final ExecutorService service = Executors.newCachedThreadPool(
+                    new NamePrefixThreadFactory(MediawikiImporter.class.getSimpleName() + ".convertConsumer"));
             final convertConsumer[] consumers = new convertConsumer[threads];
             final Future<?>[] consumerResults = (Future<?>[]) Array.newInstance(Future.class, threads);
             for (int i = 0; i < threads; i++) {
@@ -220,7 +222,7 @@ public class MediawikiImporter extends Thread implements Importer {
                                 ConcurrentLog.info("WIKITRANSLATION", "ERROR: " + title + " has empty content");
                                 continue;
                             }
-                            record = newRecord(this.hostport, this.urlStub, title, sb);
+                            record = this.newRecord(this.hostport, this.urlStub, title, sb);
                             try {
                                 in.put(record);
                                 this.count++;
@@ -241,7 +243,7 @@ public class MediawikiImporter extends Thread implements Importer {
                         ConcurrentLog.info("WIKITRANSLATION", "ERROR: " + title + " has empty content");
                         continue;
                     }
-                    record = newRecord(this.hostport, this.urlStub, title, sb);
+                    record = this.newRecord(this.hostport, this.urlStub, title, sb);
                     try {
                         in.put(record);
                         this.count++;
@@ -275,23 +277,23 @@ public class MediawikiImporter extends Thread implements Importer {
                     consumerResults[i].get(10000, TimeUnit.MILLISECONDS);
                 }
             } catch (final Exception e) {
-            	this.errorMessage = e.getMessage();
+                this.errorMessage = e.getMessage();
                 ConcurrentLog.logException(e);
             } finally {
                 out.put(poison); // output thread condition (for file.close)
                 writerResult.get(10000, TimeUnit.MILLISECONDS);
             }
         } catch (final Exception e) {
-        	this.errorMessage = e.getMessage();
+            this.errorMessage = e.getMessage();
             ConcurrentLog.logException(e);
         } finally {
-        	if(reader != null) {
+            if(reader != null) {
                 try {
-					reader.close();
-				} catch (IOException e) {
-					ConcurrentLog.warn("WIKITRANSLATION", "Could not close dump reader : " + e.getMessage());
-				}
-        	}
+                    reader.close();
+                } catch (IOException e) {
+                    ConcurrentLog.warn("WIKITRANSLATION", "Could not close dump reader : " + e.getMessage());
+                }
+            }
             try {
                 out.put(poison); // out keeps output file open until poisened, to close file if exception happend in this block
             } catch (InterruptedException ex) { }
@@ -307,9 +309,9 @@ public class MediawikiImporter extends Thread implements Importer {
     public static class indexMaker extends Thread {
 
         File mediawikixml;
-        
+
         public indexMaker(final File mediawikixml) {
-        	super("MediawikiImporter.indexMaker " + mediawikixml != null ? mediawikixml.getName() : "");
+            super("MediawikiImporter.indexMaker " + mediawikixml != null ? mediawikixml.getName() : "");
             this.mediawikixml = mediawikixml;
         }
 
@@ -336,8 +338,8 @@ public class MediawikiImporter extends Thread implements Importer {
         final PositionAwareReader in = new PositionAwareReader(dumpFile);
         final indexProducer producer = new indexProducer(100, idxFromMediawikiXML(dumpFile));
         final wikiConsumer consumer = new wikiConsumer(100, producer);
-		final ExecutorService service = Executors.newCachedThreadPool(
-				new NamePrefixThreadFactory(MediawikiImporter.class.getSimpleName() + ".createIndex"));
+        final ExecutorService service = Executors.newCachedThreadPool(
+                new NamePrefixThreadFactory(MediawikiImporter.class.getSimpleName() + ".createIndex"));
         final Future<Integer> producerResult = service.submit(consumer);
         final Future<Integer> consumerResult = service.submit(producer);
         service.shutdown();
@@ -378,7 +380,7 @@ public class MediawikiImporter extends Thread implements Importer {
         int count;
 
         public indexProducer(final int bufferCount, final File indexFile) throws IOException {
-            this.entries = new ArrayBlockingQueue<wikisourcerecord>(bufferCount);
+            this.entries = new ArrayBlockingQueue<>(bufferCount);
             this.out = new PrintWriter(new BufferedWriter(new FileWriter(indexFile)));
             this.count = 0;
             this.out.println("<index>");
@@ -428,7 +430,7 @@ public class MediawikiImporter extends Thread implements Importer {
         private   int count;
 
         public wikiConsumer(final int bufferCount, final indexProducer producer) {
-            this.entries = new ArrayBlockingQueue<wikiraw>(bufferCount);
+            this.entries = new ArrayBlockingQueue<>(bufferCount);
             this.producer = producer;
             this.count = 0;
         }
@@ -534,14 +536,15 @@ public class MediawikiImporter extends Thread implements Importer {
         }
         public void genDocument() throws Parser.Failure {
             try {
-				this.url = new AnchorURL(this.urlStub + this.title);
-				final Document[] parsed = TextParser.parseSource(this.url, "text/html", StandardCharsets.UTF_8.name(), new HashSet<String>(), new VocabularyScraper(), 0, 1, UTF8.getBytes(this.html));
-				this.document = Document.mergeDocuments(this.url, "text/html", parsed);
-				// the wiki parser is not able to find the proper title in the source text, so it must be set here
-				this.document.setTitle(this.title);
-			} catch (final MalformedURLException e1) {
-			    ConcurrentLog.logException(e1);
-			}
+                this.url = new AnchorURL(this.urlStub + this.title);
+                final Document[] parsed = TextParser.parseSource(this.url, "text/html", StandardCharsets.UTF_8.name(),
+                        TagValency.EVAL, new HashSet<>(), new VocabularyScraper(), 0, 1, UTF8.getBytes(this.html), null);
+                this.document = Document.mergeDocuments(this.url, "text/html", parsed);
+                // the wiki parser is not able to find the proper title in the source text, so it must be set here
+                this.document.setTitle(this.title);
+            } catch (final MalformedURLException e1) {
+                ConcurrentLog.logException(e1);
+            }
         }
         public void writeXML(final OutputStreamWriter os) throws IOException {
             this.document.writeXML(os);
@@ -675,9 +678,9 @@ public class MediawikiImporter extends Thread implements Importer {
                     } catch (final Parser.Failure e) {
                         ConcurrentLog.logException(e);
                     } catch (final IOException e) {
-						// TODO Auto-generated catch block
+                        // TODO Auto-generated catch block
                         ConcurrentLog.logException(e);
-					}
+                    }
                 }
             } catch (final InterruptedException e) {
                 ConcurrentLog.logException(e);
@@ -728,13 +731,13 @@ public class MediawikiImporter extends Thread implements Importer {
                         // start writing a new file
                         this.outputfilename = this.targetstub + "." + this.fc + ".xml.prt";
                         this.osw = new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream(new File(this.targetdir, this.outputfilename))), StandardCharsets.UTF_8);
-                        this.osw.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" + SurrogateReader.SURROGATES_MAIN_ELEMENT_OPEN + "\n");
+                        this.osw.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" + XMLPackReader.SURROGATES_MAIN_ELEMENT_OPEN + "\n");
                     }
                     ConcurrentLog.info("WIKITRANSLATION", "[CONSUME] Title: " + record.title);
                     record.document.writeXML(this.osw);
                     this.rc++;
                     if (this.rc >= 10000) {
-                        this.osw.write(SurrogateReader.SURROGATES_MAIN_ELEMENT_CLOSE + "\n");
+                        this.osw.write(XMLPackReader.SURROGATES_MAIN_ELEMENT_CLOSE + "\n");
                         this.osw.close();
                         final String finalfilename = this.targetstub + "." + this.fc + ".xml";
                         new File(this.targetdir, this.outputfilename).renameTo(new File(this.targetdir, finalfilename));
@@ -742,7 +745,7 @@ public class MediawikiImporter extends Thread implements Importer {
                         this.fc++;
                         this.outputfilename = this.targetstub + "." + this.fc + ".xml.prt";
                         this.osw = new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream(new File(this.targetdir, this.outputfilename))), StandardCharsets.UTF_8);
-                        this.osw.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" + SurrogateReader.SURROGATES_MAIN_ELEMENT_OPEN + "\n");
+                        this.osw.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" + XMLPackReader.SURROGATES_MAIN_ELEMENT_OPEN + "\n");
                     }
                 }
             } catch (final InterruptedException e) {
@@ -755,8 +758,8 @@ public class MediawikiImporter extends Thread implements Importer {
                 ConcurrentLog.logException(e);
             } finally {
                 try {
-                    if (osw != null) { // maybe null on poison (immediately)
-                        this.osw.write(SurrogateReader.SURROGATES_MAIN_ELEMENT_CLOSE + "\n");
+                    if (this.osw != null) { // maybe null on poison (immediately)
+                        this.osw.write(XMLPackReader.SURROGATES_MAIN_ELEMENT_CLOSE + "\n");
                         this.osw.close();
                         final String finalfilename = this.targetstub + "." + this.fc + ".xml";
                         new File(this.targetdir, this.outputfilename).renameTo(new File(this.targetdir, finalfilename));
@@ -771,78 +774,78 @@ public class MediawikiImporter extends Thread implements Importer {
 
     }
 
-	public static void main(final String[] s) {
-		if (s.length == 0) {
-			System.out.println("usage:");
-			System.out.println(" -index <wikipedia-dump>");
-			System.out.println(" -read  <start> <len> <idx-file>");
-			System.out.println(" -find  <title> <wikipedia-dump>");
-			System.out.println(" -convert <wikipedia-dump-xml.bz2> <convert-target-dir>");
-			ConcurrentLog.shutdown();
-			return;
-		}
+    public static void main(final String[] s) {
+        if (s.length == 0) {
+            System.out.println("usage:");
+            System.out.println(" -index <wikipedia-dump>");
+            System.out.println(" -read  <start> <len> <idx-file>");
+            System.out.println(" -find  <title> <wikipedia-dump>");
+            System.out.println(" -convert <wikipedia-dump-xml.bz2> <convert-target-dir>");
+            ConcurrentLog.shutdown();
+            return;
+        }
 
-		try {
-			// example:
-			// java -Xmx2000m -cp classes:lib/bzip2.jar
-			// de.anomic.tools.mediawikiIndex -convert
-			// DATA/HTCACHE/dewiki-20090311-pages-articles.xml.bz2
-			// DATA/SURROGATES/in/ http://de.wikipedia.org/wiki/
+        try {
+            // example:
+            // java -Xmx2000m -cp classes:lib/bzip2.jar
+            // de.anomic.tools.mediawikiIndex -convert
+            // DATA/HTCACHE/dewiki-20090311-pages-articles.xml.bz2
+            // DATA/PACKS/load/ http://de.wikipedia.org/wiki/
 
-			if (s[0].equals("-convert")) {
-				if(s.length < 3) {
-					System.out.println("usage:");
-					System.out.println(" -convert <wikipedia-dump-xml.bz2> <convert-target-dir>");
-					ConcurrentLog.shutdown();
-					return;
-				}
-				final File targetdir = new File(s[2]);
-				try {
-					final MediawikiImporter mi = new MediawikiImporter(new MultiProtocolURL(s[1]), targetdir);
-					mi.start();
-					mi.join();
-				} catch (final InterruptedException e) {
-					ConcurrentLog.logException(e);
-				} catch (MalformedURLException e) {
-					ConcurrentLog.logException(e);
-				}
-			}
+            if (s[0].equals("-convert")) {
+                if(s.length < 3) {
+                    System.out.println("usage:");
+                    System.out.println(" -convert <wikipedia-dump-xml.bz2> <convert-target-dir>");
+                    ConcurrentLog.shutdown();
+                    return;
+                }
+                final File targetdir = new File(s[2]);
+                try {
+                    final MediawikiImporter mi = new MediawikiImporter(new MultiProtocolURL(s[1]), targetdir);
+                    mi.start();
+                    mi.join();
+                } catch (final InterruptedException e) {
+                    ConcurrentLog.logException(e);
+                } catch (MalformedURLException e) {
+                    ConcurrentLog.logException(e);
+                }
+            }
 
-			if (s[0].equals("-index")) {
-				try {
-					createIndex(new File(s[1]));
-				} catch (final IOException e) {
-					ConcurrentLog.logException(e);
-				}
-			}
+            if (s[0].equals("-index")) {
+                try {
+                    createIndex(new File(s[1]));
+                } catch (final IOException e) {
+                    ConcurrentLog.logException(e);
+                }
+            }
 
-			if (s[0].equals("-read")) {
-				final long start = Integer.parseInt(s[1]);
-				final int len = Integer.parseInt(s[2]);
-				System.out.println(UTF8.String(read(new File(s[3]), start, len)));
-			}
+            if (s[0].equals("-read")) {
+                final long start = Integer.parseInt(s[1]);
+                final int len = Integer.parseInt(s[2]);
+                System.out.println(UTF8.String(read(new File(s[3]), start, len)));
+            }
 
-			if (s[0].equals("-find")) {
-				try {
-					final wikisourcerecord w = find(s[1], new File(s[2] + ".idx.xml"));
-					if (w == null) {
-						ConcurrentLog.info("WIKITRANSLATION", "not found");
-					} else {
-						System.out.println(UTF8.String(read(new File(s[2]), w.start, (int) (w.end - w.start))));
-					}
-				} catch (final IOException e) {
-					ConcurrentLog.logException(e);
-				}
+            if (s[0].equals("-find")) {
+                try {
+                    final wikisourcerecord w = find(s[1], new File(s[2] + ".idx.xml"));
+                    if (w == null) {
+                        ConcurrentLog.info("WIKITRANSLATION", "not found");
+                    } else {
+                        System.out.println(UTF8.String(read(new File(s[2]), w.start, (int) (w.end - w.start))));
+                    }
+                } catch (final IOException e) {
+                    ConcurrentLog.logException(e);
+                }
 
-			}
-		} finally {
-			try {
-				HTTPClient.closeConnectionManager();
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
-			ConcurrentLog.shutdown();
-		}
-	}
+            }
+        } finally {
+            try {
+                HTTPClient.closeConnectionManager();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            ConcurrentLog.shutdown();
+        }
+    }
 
 }

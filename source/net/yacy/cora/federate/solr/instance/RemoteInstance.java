@@ -1,7 +1,7 @@
 /**
  *  RemoteInstance
  *  Copyright 2013 by Michael Peter Christen
- *  First released 13.02.2013 at http://yacy.net
+ *  First released 13.02.2013 at https://yacy.net
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -34,7 +34,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.http.Header;
 import org.apache.http.HeaderElement;
 import org.apache.http.HttpEntity;
@@ -101,6 +101,9 @@ public class RemoteInstance implements SolrInstance {
     
     /** HTTP client used to request the Solr server */
     private final HttpClient client;
+
+    /** When true, this instance owns the HTTP client and must close it. */
+    private final boolean closeClientOnClose;
     
     /** Default Solr core name */
     private final String defaultCoreName;
@@ -251,9 +254,11 @@ public class RemoteInstance implements SolrInstance {
         }
         if (solraccount.length() > 0) {
             this.client = buildCustomHttpClient(timeout, u, solraccount, solrpw, host, trustSelfSignedOnAuthenticatedServer, maxBytesPerResponse);
+            this.closeClientOnClose = false;
         } else if(u.isHTTPS()){
         	/* Here we must trust self-signed certificates as most peers with SSL enabled use such certificates */
         	this.client = buildCustomHttpClient(timeout, u, solraccount, solrpw, host, true, maxBytesPerResponse);
+            this.closeClientOnClose = false;
         } else {
         	/* Build a http client using the Solr utils as in the HttpSolrClient constructor implementation. 
         	 * The main difference is that a shared connection manager is used (configured in the buildConnectionManager() function) */
@@ -269,6 +274,7 @@ public class RemoteInstance implements SolrInstance {
             
             
             this.client = HttpClientUtil.createClient(params);
+            this.closeClientOnClose = true;
             if(this.client instanceof org.apache.http.impl.client.DefaultHttpClient) {
             	if(this.client.getParams() != null) {
             		/* Set the maximum time to get a connection from the shared connections pool */
@@ -560,6 +566,9 @@ public class RemoteInstance implements SolrInstance {
 				solrClient.close();
 			} catch (final IOException ignored) {
 			}
+		}
+		if (this.closeClientOnClose) {
+			HttpClientUtil.close(this.client);
 		}
 	}
     

@@ -1,7 +1,7 @@
 /**
  *  URIMetadataNode
  *  Copyright 2012 by Michael Peter Christen
- *  First released 10.8.2012 at http://yacy.net
+ *  First released 10.8.2012 at https://yacy.net
  *
  *  This file is part of YaCy Content Integration
  *
@@ -37,7 +37,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -58,7 +57,6 @@ import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.crawler.retrieval.Response;
 import net.yacy.document.SentenceReader;
 import net.yacy.document.Tokenizer;
-import net.yacy.document.parser.pdfParser;
 import net.yacy.document.parser.html.ContentScraper;
 import net.yacy.document.parser.html.IconEntry;
 import net.yacy.document.parser.html.IconLinkRelations;
@@ -186,7 +184,7 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
             final String myhash = ASCII.String(this.url.hash());
             if (!hashstr.equals(myhash)) {
                 this.setField(CollectionSchema.id.getSolrFieldName(), myhash);
-                ConcurrentLog.fine("URIMetadataNode", "updated document.ID of " + urlRaw + " from " + hashstr + " to " + myhash);
+                ConcurrentLog.fine("KELONDRO", "URIMetadataNode: updated document.ID of " + urlRaw + " from " + hashstr + " to " + myhash);
                 // ususally the hosthash matches but just to be on the safe site
                 final String hostidstr = getString(CollectionSchema.host_id_s); // id or empty string
                 if (!hostidstr.isEmpty() && !hostidstr.equals(this.url.hosthash())) {
@@ -516,6 +514,10 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
     public WordReferenceVars word() {
         return this.word;
     }
+    
+    public ArrayList<String> getSynonyms() {
+        return getStringList(CollectionSchema.synonyms_sxt);
+    }
 
     public static Iterator<String> getLinks(SolrDocument doc, boolean inbound) {
         Collection<Object> urlstub = doc.getFieldValues((inbound ? CollectionSchema.inboundlinks_urlstub_sxt :  CollectionSchema.outboundlinks_urlstub_sxt).getSolrFieldName());
@@ -702,14 +704,14 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
 
     public static URIMetadataNode importEntry(final String propStr, String collection) {
         if (propStr == null || propStr.isEmpty() || propStr.charAt(0) != '{' || !propStr.endsWith("}")) {
-            ConcurrentLog.severe("URIMetadataNode", "importEntry: propStr is not proper: " + propStr);
+            ConcurrentLog.severe("KELONDRO", "URIMetadataNode: importEntry: propStr is not proper: " + propStr);
             return null;
         }
         try {
             return new URIMetadataNode(MapTools.s2p(propStr.substring(1, propStr.length() - 1)), collection);
         } catch (final kelondroException | MalformedURLException e) {
             // wrong format
-            ConcurrentLog.severe("URIMetadataNode", e.getMessage());
+            ConcurrentLog.severe("KELONDRO", "URIMetadataNode: " + e.getMessage());
             return null;
         }
     }
@@ -874,10 +876,17 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
     private Date[] getDates(CollectionSchema field) {
         assert field.isMultiValued();
         assert field.getType() == SolrType.date;
-        @SuppressWarnings("unchecked")
-        List<Date> x = (List<Date>) this.getFieldValue(field.getSolrFieldName());
-        if (x == null) return new Date[0];
-        return x.toArray(new Date[x.size()]);
+        Object content = this.getFieldValue(field.getSolrFieldName());
+        if (content == null) return new Date[0];
+        if (content instanceof Date) {
+        	return new Date[] {(Date) content};
+        }
+        if (content instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<Date> x = (List<Date>) content;
+            return x.toArray(new Date[x.size()]);
+        }
+        return new Date[0];
     }
 
     private String getString(CollectionSchema field) {
@@ -981,17 +990,7 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
     public String urlstring() {
         if (this.alternative_urlstring != null) return this.alternative_urlstring;
 
-        if (!pdfParser.individualPages) return this.url().toNormalform(true);
-        if (!"pdf".equals(MultiProtocolURL.getFileExtension(this.url().getFileName()).toLowerCase(Locale.ROOT))) return this.url().toNormalform(true);
-        // for pdf links we rewrite the url
-        // this is a special treatment of pdf files which can be splitted into subpages
-        String pageprop = pdfParser.individualPagePropertyname;
-        String resultUrlstring = this.url().toNormalform(true);
-        int p = resultUrlstring.lastIndexOf(pageprop + "=");
-        if (p > 0) {
-          return resultUrlstring.substring(0, p - 1) + "#page=" + resultUrlstring.substring(p + pageprop.length() + 1);
-        }
-        return resultUrlstring;
+        return this.url().toNormalform(true);
     }
     /**
      * used for search result entry

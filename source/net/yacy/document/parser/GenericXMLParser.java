@@ -105,14 +105,15 @@ public class GenericXMLParser extends AbstractParser implements Parser {
     	if((maxBytes / Character.BYTES) > Integer.MAX_VALUE) {
     		maxChars = Integer.MAX_VALUE;
     	} else {
-    		maxChars = ((int)maxBytes) / Character.BYTES;
+    		maxChars = (int)(maxBytes / Character.BYTES);
     	}
     	
         try (/* Automatically closed by this try-with-resources statement*/ CharBuffer writer = new CharBuffer(maxChars);){
 
         	/* Use commons-io XmlStreamReader advanced rules to help with charset detection when source contains no BOM or XML declaration
         	 * (detection algorithm notably also include ContentType transmitted by HTTP headers, here eventually present as mimeType and charset parameters),  */
-        	final XmlStreamReader reader = new XmlStreamReader(source, mimeType, true, charset);
+            final XmlStreamReader reader = XmlStreamReader.builder().setInputStream(source).setHttpContentType(mimeType).setLenient(true).setCharset(charset).get();
+        	//final XmlStreamReader reader = new XmlStreamReader(source, mimeType, true, charset);
 			final InputSource saxSource = new InputSource(reader);
 			final String detectedCharset = reader.getEncoding();
 
@@ -153,7 +154,7 @@ public class GenericXMLParser extends AbstractParser implements Parser {
      */
     @Override
     public Document[] parseWithLimits(DigestURL location, String mimeType, String charsetName, VocabularyScraper scraper,
-    		int timezoneOffset, InputStream source, int maxLinks, long maxBytes)
+    		int timezoneOffset, InputStream source, int maxLinks, long maxBytes, Date lastModified)
     		throws Failure, InterruptedException, UnsupportedOperationException {
     	/* Limit the size of the in-memory buffer to at most 25% of the available memory :
     	 * because some room is needed, and before being garbage collected the buffer will be converted to a String, then to a byte array. 
@@ -164,7 +165,7 @@ public class GenericXMLParser extends AbstractParser implements Parser {
     	if((maxTextBytes / Character.BYTES) > Integer.MAX_VALUE) {
     		maxChars = Integer.MAX_VALUE;
     	} else {
-    		maxChars = ((int)maxTextBytes) / Character.BYTES;
+    		maxChars = (int)(maxTextBytes / Character.BYTES);
     	}
     	
         try (/* Automatically closed by this try-with-resources statement*/ CharBuffer writer = new CharBuffer(maxChars);){
@@ -176,7 +177,8 @@ public class GenericXMLParser extends AbstractParser implements Parser {
         	
         	/* Use commons-io XmlStreamReader advanced rules to help with charset detection when source contains no BOM or XML declaration
         	 * (detection algorithm notably also include ContentType transmitted by HTTP headers, here eventually present as mimeType and charset parameters),  */
-        	final XmlStreamReader reader = new XmlStreamReader(limitedSource, mimeType, true, charsetName);
+            final XmlStreamReader reader = XmlStreamReader.builder().setInputStream(limitedSource).setHttpContentType(mimeType).setLenient(true).setCharset(charsetName).get();
+        	//final XmlStreamReader reader = new XmlStreamReader(limitedSource, mimeType, true, charsetName);
 			final InputSource saxSource = new InputSource(reader);
 			final String detectedCharset = reader.getEncoding();
 

@@ -1,7 +1,7 @@
 /**
  *  HTTPClient
  *  Copyright 2010 by Sebastian Gaebel
- *  First released 01.07.2010 at http://yacy.net
+ *  First released 01.07.2010 at https://yacy.net
  *
  *  $LastChangedDate$
  *  $LastChangedRevision$
@@ -29,8 +29,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.net.URI;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
@@ -40,12 +39,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.net.ssl.SSLContext;
@@ -59,12 +58,12 @@ import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpHeaders;
 import org.apache.http.HttpHost;
+import org.apache.http.HttpRequest;
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpStatus;
 import org.apache.http.auth.AuthSchemeProvider;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.config.AuthSchemes;
 import org.apache.http.client.config.CookieSpecs;
@@ -75,12 +74,12 @@ import org.apache.http.client.methods.HttpHead;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.client.methods.RequestBuilder;
 import org.apache.http.config.Lookup;
 import org.apache.http.config.Registry;
 import org.apache.http.config.RegistryBuilder;
 import org.apache.http.config.SocketConfig;
 import org.apache.http.conn.ConnectionKeepAliveStrategy;
-import org.apache.http.conn.DnsResolver;
 import org.apache.http.conn.routing.HttpRoute;
 import org.apache.http.conn.socket.ConnectionSocketFactory;
 import org.apache.http.conn.socket.PlainConnectionSocketFactory;
@@ -89,12 +88,15 @@ import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.entity.mime.content.ContentBody;
 import org.apache.http.impl.auth.BasicSchemeFactory;
+import org.apache.http.impl.client.BasicCookieStore;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.DefaultRedirectStrategy;
 import org.apache.http.impl.client.DefaultConnectionKeepAliveStrategy;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.IdleConnectionEvictor;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
+import org.apache.http.ProtocolException;
 import org.apache.http.protocol.HTTP;
 import org.apache.http.protocol.HttpContext;
 import org.apache.http.util.ByteArrayBuffer;
@@ -120,152 +122,157 @@ import net.yacy.kelondro.util.NamePrefixThreadFactory;
  *
  */
 public class HTTPClient implements Closeable {
-    
+
     private static final int default_timeout = 6000;
-    
+
     /** Maximum number of simultaneously open outgoing HTTP connections in the pool */
-	private static final int maxcon = 200;
-	
-	/** Default sleep time in seconds between each run of the connection evictor */
-	private static final int DEFAULT_CONNECTION_EVICTOR_SLEEP_TIME = 5;
-	
-	/** Default maximum time in seconds to keep alive an idle connection in the pool */
-	private static final int DEFAULT_POOLED_CONNECTION_TIME_TO_LIVE = 30;
-	
-	private static final RequestConfig DFLTREQUESTCONFIG = initRequestConfig();
-	
-	/** Use the custom YaCyDigestScheme for HTTP Digest Authentication */
+    private static final int maxcon = 200;
+
+    /** Default sleep time in seconds between each run of the connection evictor */
+    private static final int DEFAULT_CONNECTION_EVICTOR_SLEEP_TIME = 5;
+
+    /** Default maximum time in seconds to keep alive an idle connection in the pool */
+    private static final int DEFAULT_POOLED_CONNECTION_TIME_TO_LIVE = 30;
+
+    private static RequestConfig DFLTREQUESTCONFIG = initRequestConfig(default_timeout);
+
+    /** Use the custom YaCyDigestScheme for HTTP Digest Authentication */
     private static final Lookup<AuthSchemeProvider> AUTHSCHEMEREGISTRY = RegistryBuilder.<AuthSchemeProvider>create()
             .register(AuthSchemes.BASIC, new BasicSchemeFactory())
             .register(AuthSchemes.DIGEST, new YaCyDigestSchemeFactory())
             .build();
-	
-	/** The connection manager holding the configured connection pool for this client */
-	public static final PoolingHttpClientConnectionManager CONNECTION_MANAGER = initPoolingConnectionManager();
-	
-	/** Default setting to apply when the JVM system option jsse.enableSNIExtension is not defined */
-	public static final boolean ENABLE_SNI_EXTENSION_DEFAULT = true;
-	
-	/** When true, Server Name Indication (SNI) extension is enabled on outgoing TLS connections.
-	 * @see <a href="https://tools.ietf.org/html/rfc6066#section-3">RFC 6066 definition</a> 
-	 * @see <a href="https://bugs.java.com/bugdatabase/view_bug.do?bug_id=7127374">JDK 1.7 bug</a> on "unrecognized_name" warning for SNI */
-	public static final AtomicBoolean ENABLE_SNI_EXTENSION = new AtomicBoolean(
-			Boolean.parseBoolean(System.getProperty("jsse.enableSNIExtension", Boolean.toString(ENABLE_SNI_EXTENSION_DEFAULT))));
-	
+
+    /** The connection manager holding the configured connection pool for this client */
+    public static final PoolingHttpClientConnectionManager CONNECTION_MANAGER = initPoolingConnectionManager();
+
+    /** Default setting to apply when the JVM system option jsse.enableSNIExtension is not defined */
+    public static final boolean ENABLE_SNI_EXTENSION_DEFAULT = true;
+
+    /** When true, Server Name Indication (SNI) extension is enabled on outgoing TLS connections.
+     * @see <a href="https://tools.ietf.org/html/rfc6066#section-3">RFC 6066 definition</a>
+     * @see <a href="https://bugs.java.com/bugdatabase/view_bug.do?bug_id=7127374">JDK 1.7 bug</a> on "unrecognized_name" warning for SNI */
+    public static final AtomicBoolean ENABLE_SNI_EXTENSION = new AtomicBoolean(
+            Boolean.parseBoolean(System.getProperty("jsse.enableSNIExtension", Boolean.toString(ENABLE_SNI_EXTENSION_DEFAULT))));
+
 
     /**
-	 * Background daemon thread evicting expired idle connections from the pool.
-	 * This may be eventually already done by the pool itself on connection request,
-	 * but this background task helps when no request is made to the pool for a long
-	 * time period.
-	 */
-	private static final IdleConnectionEvictor EXPIRED_CONNECTIONS_EVICTOR = new IdleConnectionEvictor(
-			CONNECTION_MANAGER, DEFAULT_CONNECTION_EVICTOR_SLEEP_TIME, TimeUnit.SECONDS,
-			DEFAULT_POOLED_CONNECTION_TIME_TO_LIVE, TimeUnit.SECONDS);
-	
-	static {
-		EXPIRED_CONNECTIONS_EVICTOR.start();
-	}
-	
-	private final static HttpClientBuilder clientBuilder = initClientBuilder();
-	private final RequestConfig.Builder reqConfBuilder;
-	private Set<Entry<String, String>> headers = null;
-	private long upbytes = 0L;
-	private String host = null;
-	private final long timeout;
-	private static ExecutorService executor = Executors
-			.newCachedThreadPool(new NamePrefixThreadFactory(HTTPClient.class.getSimpleName() + ".execute"));
-	
-	/** these are the main variable to hold information and to take care of closing: */
-	private CloseableHttpClient client = null;
-	private CloseableHttpResponse httpResponse = null;
-	private HttpUriRequest currentRequest = null;
+     * Background daemon thread evicting expired idle connections from the pool.
+     * This may be eventually already done by the pool itself on connection request,
+     * but this background task helps when no request is made to the pool for a long
+     * time period.
+     */
+    private static final IdleConnectionEvictor EXPIRED_CONNECTIONS_EVICTOR = new IdleConnectionEvictor(
+            CONNECTION_MANAGER, DEFAULT_CONNECTION_EVICTOR_SLEEP_TIME, TimeUnit.SECONDS,
+            DEFAULT_POOLED_CONNECTION_TIME_TO_LIVE, TimeUnit.SECONDS);
 
-	
+    static {
+        EXPIRED_CONNECTIONS_EVICTOR.start();
+    }
+
+    private final RequestConfig.Builder reqConfBuilder;
+    private Set<Entry<String, String>> headers = null;
+    private long upbytes = 0L;
+    private String host = null;
+    private final long timeout;
+    private final HttpClientBuilder clientBuilder;
+
+    private static ExecutorService executor = Executors
+            .newCachedThreadPool(new NamePrefixThreadFactory(HTTPClient.class.getSimpleName() + ".execute"));
+
+    /** these are the main variable to hold information and to take care of closing: */
+    private CloseableHttpClient client = null;
+    private CloseableHttpResponse httpResponse = null;
+    private HttpUriRequest currentRequest = null;
+
+
     public HTTPClient(final ClientIdentification.Agent agent) {
         super();
-        this.timeout = agent.clientTimeout;
-        clientBuilder.setUserAgent(agent.userAgent);
-        reqConfBuilder = RequestConfig.copy(DFLTREQUESTCONFIG);
-        setTimout(agent.clientTimeout);
+        this.timeout = agent.clientTimeout();
+        this.clientBuilder = initClientBuilder();
+        this.clientBuilder.setUserAgent(agent.userAgent());
+        this.reqConfBuilder = RequestConfig.copy(DFLTREQUESTCONFIG);
+        this.setTimout(agent.clientTimeout());
     }
-    
+
     public HTTPClient(final ClientIdentification.Agent agent, final int timeout) {
         super();
         this.timeout = timeout;
-        clientBuilder.setUserAgent(agent.userAgent);
-        reqConfBuilder = RequestConfig.copy(DFLTREQUESTCONFIG);
-        setTimout(timeout);
+        this.clientBuilder = initClientBuilder();
+        this.clientBuilder.setUserAgent(agent.userAgent());
+        this.reqConfBuilder = RequestConfig.copy(DFLTREQUESTCONFIG);
+        this.setTimout(timeout);
     }
-    
-    private static RequestConfig initRequestConfig() {
-    	final RequestConfig.Builder builder = RequestConfig.custom();
-    	// IMPORTANT - if not set to 'false' then servers do not process the request until a time-out of 2 seconds
-    	builder.setExpectContinueEnabled(false);
+
+    private static RequestConfig initRequestConfig(int timeout) {
+        final RequestConfig.Builder builder = RequestConfig.custom();
+        // IMPORTANT - if not set to 'false' then servers do not process the request until a time-out of 2 seconds
+        builder.setExpectContinueEnabled(false);
         // timeout in milliseconds until a connection is established in milliseconds
-        builder.setConnectionRequestTimeout(default_timeout);
-        builder.setConnectTimeout(default_timeout);
+        builder.setConnectionRequestTimeout(timeout);
+        builder.setConnectTimeout(timeout);
         // SO_TIMEOUT: maximum period inactivity between two consecutive data packets in milliseconds
-        builder.setSocketTimeout(default_timeout);
+        builder.setSocketTimeout(timeout);
         // ignore cookies, cause this may cause segfaults in default cookiestore and is not needed
         builder.setCookieSpec(CookieSpecs.IGNORE_COOKIES);
         builder.setRedirectsEnabled(true);
         builder.setRelativeRedirectsAllowed(true);
         return builder.build();
     }
-    
+
     private static HttpClientBuilder initClientBuilder() {
-    	final HttpClientBuilder builder = HttpClientBuilder.create();
-    	
-    	builder.setConnectionManager(CONNECTION_MANAGER);
-    	builder.setConnectionManagerShared(true);
-    	
-		builder.setDefaultRequestConfig(DFLTREQUESTCONFIG);
-		
-    	// UserAgent
-		builder.setUserAgent(ClientIdentification.yacyInternetCrawlerAgent.userAgent);
-		
-		// remove retries; we expect connections to fail; therefore we should not retry
-		//builder.disableAutomaticRetries();
-		// disable the cookiestore, cause this may cause segfaults and is not needed
-		builder.setDefaultCookieStore(null);
-		builder.disableCookieManagement();
-		
-		// add custom keep alive strategy
-		builder.setKeepAliveStrategy(customKeepAliveStrategy());
-		
-		// ask for gzip
-		builder.addInterceptorLast(new GzipRequestInterceptor());
-		// uncompress gzip
-		builder.addInterceptorLast(new GzipResponseInterceptor());
-		// Proxy
-		builder.setRoutePlanner(ProxySettings.RoutePlanner);
-    	builder.setDefaultCredentialsProvider(ProxySettings.CredsProvider);
-		
-    	return builder;
+        final HttpClientBuilder builder = HttpClientBuilder.create();
+
+        builder.setConnectionManager(CONNECTION_MANAGER);
+        builder.setConnectionManagerShared(true);
+        builder.setDefaultRequestConfig(DFLTREQUESTCONFIG);
+        builder.setRedirectStrategy(new YaCyRedirectStrategy());
+        builder.setUserAgent(ClientIdentification.yacyInternetCrawlerAgent.userAgent());
+        builder.setDefaultCookieStore(new BasicCookieStore());
+
+        // add custom keep alive strategy
+        builder.setKeepAliveStrategy(customKeepAliveStrategy());
+
+        // ask for gzip
+        builder.addInterceptorLast(new GzipRequestInterceptor());
+        // uncompress gzip
+        builder.addInterceptorLast(new GzipResponseInterceptor());
+        // Proxy
+        builder.setRoutePlanner(ProxySettings.RoutePlanner);
+        builder.setDefaultCredentialsProvider(ProxySettings.CredsProvider);
+
+        return builder;
     }
-    
+
     private static PoolingHttpClientConnectionManager initPoolingConnectionManager() {
-    	final PlainConnectionSocketFactory plainsf = PlainConnectionSocketFactory.getSocketFactory();
-    	final Registry<ConnectionSocketFactory> registry = RegistryBuilder.<ConnectionSocketFactory>create()
-    	        .register("http", plainsf)
-    	        .register("https", getSSLSocketFactory())
-    	        .build();
-    	final PoolingHttpClientConnectionManager pooling = new PoolingHttpClientConnectionManager(registry, null, null, new DnsResolver(){
-			@Override
-			public InetAddress[] resolve(final String host0)throws UnknownHostException {
-				final InetAddress ip = Domains.dnsResolve(host0);
-				if (ip == null) throw new UnknownHostException(host0);
-				return new InetAddress[]{ip};
-			}}, DEFAULT_POOLED_CONNECTION_TIME_TO_LIVE, TimeUnit.SECONDS);
+        final PlainConnectionSocketFactory plainsf = PlainConnectionSocketFactory.getSocketFactory();
+        final Registry<ConnectionSocketFactory> registry = RegistryBuilder.<ConnectionSocketFactory>create()
+                .register("http", plainsf)
+                .register("https", getSSLSocketFactory())
+                .build();
+        PoolingHttpClientConnectionManager pooling = new PoolingHttpClientConnectionManager(registry);
+        /*
+        final PoolingHttpClientConnectionManager pooling = new PoolingHttpClientConnectionManager(registry, null, null, host0 -> {
+            final String qname = java.net.IDN.toASCII(host0);
+            final InetAddress ip = Domains.dnsResolve(qname);
+            if (ip == null) {
+                UnknownHostException uhe = new UnknownHostException(qname + " (DNS resolve returned null)");
+                // Optional: attach a hint for Unicode hosts
+                if (!qname.equals(host0)) {
+                    uhe.addSuppressed(new RuntimeException("IDN note: original host='" + host0 + "', ascii='" + qname + "'"));
+                }
+                throw uhe;
+            }
+            return new InetAddress[]{ip};
+        }, DEFAULT_POOLED_CONNECTION_TIME_TO_LIVE, TimeUnit.SECONDS);
+        */
         initPoolMaxConnections(pooling, maxcon);
-        
+
         pooling.setValidateAfterInactivity(default_timeout); // on init set to default 5000ms
         final SocketConfig socketConfig = SocketConfig.custom()
                 // Defines whether the socket can be bound even though a previous connection is still in a timeout state.
                 .setSoReuseAddress(true)
                 // SO_TIMEOUT: maximum period inactivity between two consecutive data packets in milliseconds
-                .setSoTimeout(3000)
+                .setSoTimeout(default_timeout)
                 // conserve bandwidth by minimizing the number of segments that are sent
                 .setTcpNoDelay(false)
                 .build();
@@ -273,57 +280,77 @@ public class HTTPClient implements Closeable {
 
         return pooling;
     }
-    
-	/**
-	 * Initialize the maximum connections for the given pool
-	 * 
-	 * @param pool
-	 *            a pooling connection manager. Must not be null.
-	 * @param maxConnections.
-	 *            The new maximum connections values. Must be greater than 0.
-	 * @throws IllegalArgumentException
-	 *             when pool is null or when maxConnections is lower than 1
-	 */
-	public static void initPoolMaxConnections(final PoolingHttpClientConnectionManager pool, int maxConnections) {
-		if (pool == null) {
-			throw new IllegalArgumentException("pool parameter must not be null");
-		}
-		if (maxConnections <= 0) {
-			throw new IllegalArgumentException("maxConnections parameter must be greater than zero");
-		}
-		pool.setMaxTotal(maxConnections);
-		// for statistics same value should also be set here
-		ConnectionInfo.setMaxcount(maxConnections);
-		
+
+    private static final class YaCyRedirectStrategy extends DefaultRedirectStrategy {
+        @Override
+        protected boolean isRedirectable(final String method) {
+            return true;
+        }
+
+        @Override
+        public HttpUriRequest getRedirect(
+                final HttpRequest request,
+                final HttpResponse response,
+                final HttpContext context) throws ProtocolException {
+            final URI uri = getLocationURI(request, response, context);
+            final int status = response.getStatusLine().getStatusCode();
+            if (status == HttpStatus.SC_SEE_OTHER) {
+                return new HttpGet(uri);
+            }
+            return RequestBuilder.copy(request).setUri(uri).build();
+        }
+    }
+
+    /**
+     * Initialize the maximum connections for the given pool
+     *
+     * @param pool
+     *            a pooling connection manager. Must not be null.
+     * @param maxConnections.
+     *            The new maximum connections values. Must be greater than 0.
+     * @throws IllegalArgumentException
+     *             when pool is null or when maxConnections is lower than 1
+     */
+    public static void initPoolMaxConnections(final PoolingHttpClientConnectionManager pool, final int maxConnections) {
+        if (pool == null) {
+            throw new IllegalArgumentException("pool parameter must not be null");
+        }
+        if (maxConnections <= 0) {
+            throw new IllegalArgumentException("maxConnections parameter must be greater than zero");
+        }
+        pool.setMaxTotal(maxConnections);
+        // for statistics same value should also be set here
+        ConnectionInfo.setMaxcount(maxConnections);
+
         // connections per host (2 default)
         pool.setDefaultMaxPerRoute((int) (2 * Memory.cores()));
-		
-		// Increase max connections for localhost
-		final HttpHost localhost = new HttpHost(Domains.LOCALHOST);
-		pool.setMaxPerRoute(new HttpRoute(localhost), maxConnections);
-	}
 
-	/**
-	 * This method should be called just before shutdown to stop the
-	 * ConnectionManager and the idle connections evictor.
-	 *
-	 * @throws InterruptedException
-	 *             when the current thread is interrupted before the idle
-	 *             connections evictor thread termination.
-	 */
-	public static void closeConnectionManager() throws InterruptedException {
-		try {
-			if (EXPIRED_CONNECTIONS_EVICTOR != null) {
-				// Shut down the evictor thread
-				EXPIRED_CONNECTIONS_EVICTOR.shutdown();
-				EXPIRED_CONNECTIONS_EVICTOR.awaitTermination(1L, TimeUnit.SECONDS);
-			}
-		} finally {
-			if (CONNECTION_MANAGER != null) {
-				CONNECTION_MANAGER.shutdown();
-			}
-		}
-	}
+        // Increase max connections for localhost
+        final HttpHost localhost = new HttpHost(Domains.LOCALHOST);
+        pool.setMaxPerRoute(new HttpRoute(localhost), maxConnections);
+    }
+
+    /**
+     * This method should be called just before shutdown to stop the
+     * ConnectionManager and the idle connections evictor.
+     *
+     * @throws InterruptedException
+     *             when the current thread is interrupted before the idle
+     *             connections evictor thread termination.
+     */
+    public static void closeConnectionManager() throws InterruptedException {
+        try {
+            if (EXPIRED_CONNECTIONS_EVICTOR != null) {
+                // Shut down the evictor thread
+                EXPIRED_CONNECTIONS_EVICTOR.shutdown();
+                EXPIRED_CONNECTIONS_EVICTOR.awaitTermination(1L, TimeUnit.SECONDS);
+            }
+        } finally {
+            if (CONNECTION_MANAGER != null) {
+                CONNECTION_MANAGER.shutdown();
+            }
+        }
+    }
 
     /**
      * This method sets the Header used for the request
@@ -331,7 +358,7 @@ public class HTTPClient implements Closeable {
      * @param entrys to be set as request header
      */
     public void setHeader(final Set<Entry<String, String>> entrys) {
-    	this.headers = entrys;
+        this.headers = entrys;
     }
 
     /**
@@ -340,9 +367,10 @@ public class HTTPClient implements Closeable {
      * @param timeout in milliseconds
      */
     public void setTimout(final int timeout) {
-    	reqConfBuilder.setSocketTimeout(timeout);
-    	reqConfBuilder.setConnectTimeout(timeout);
-    	reqConfBuilder.setConnectionRequestTimeout(timeout);
+        this.reqConfBuilder.setSocketTimeout(timeout);
+        this.reqConfBuilder.setConnectTimeout(timeout);
+        this.reqConfBuilder.setConnectionRequestTimeout(timeout);
+        DFLTREQUESTCONFIG = initRequestConfig(timeout);
     }
 
     /**
@@ -351,7 +379,7 @@ public class HTTPClient implements Closeable {
      * @param userAgent
      */
     public void setUserAgent(final ClientIdentification.Agent agent) {
-    	clientBuilder.setUserAgent(agent.userAgent);
+        this.clientBuilder.setUserAgent(agent.userAgent());
     }
 
     /**
@@ -360,7 +388,7 @@ public class HTTPClient implements Closeable {
      * @param host
      */
     public void setHost(final String host) {
-    	this.host = host;
+        this.host = host;
     }
 
     /**
@@ -369,8 +397,8 @@ public class HTTPClient implements Closeable {
      * @param redirecting
      */
     public void setRedirecting(final boolean redirecting) {
-    	reqConfBuilder.setRedirectsEnabled(redirecting);
-    	reqConfBuilder.setRelativeRedirectsAllowed(redirecting);
+        this.reqConfBuilder.setRedirectsEnabled(redirecting);
+        this.reqConfBuilder.setRelativeRedirectsAllowed(redirecting);
     }
 
     /**
@@ -379,13 +407,13 @@ public class HTTPClient implements Closeable {
      * @param uri the url to get
      * @param username user name for HTTP authentication : only sent requesting localhost
      * @param pass password for HTTP authentication : only sent when requesting localhost
-     * @param concurrent whether a new thread should be created to handle the request. 
+     * @param concurrent whether a new thread should be created to handle the request.
      * Ignored when requesting localhost or when the authentication password is not null
      * @return content bytes
      * @throws IOException
      */
     public byte[] GETbytes(final String uri, final String username, final String pass, final boolean concurrent) throws IOException {
-        return GETbytes(uri, username, pass, Integer.MAX_VALUE, concurrent);
+        return this.GETbytes(uri, username, pass, Integer.MAX_VALUE, concurrent);
     }
 
     /**
@@ -394,13 +422,13 @@ public class HTTPClient implements Closeable {
      * @param uri the url to get
      * @param username user name for HTTP authentication : only sent requesting localhost
      * @param pass password for HTTP authentication : only sent when requesting localhost
-     * @param concurrent whether a new thread should be created to handle the request. 
+     * @param concurrent whether a new thread should be created to handle the request.
      * Ignored when requesting localhost or when the authentication password is not null
      * @return content bytes
      * @throws IOException
      */
     public byte[] GETbytes(final MultiProtocolURL url, final String username, final String pass, final boolean concurrent) throws IOException {
-        return GETbytes(url, username, pass, Integer.MAX_VALUE, concurrent);
+        return this.GETbytes(url, username, pass, Integer.MAX_VALUE, concurrent);
     }
 
     /**
@@ -410,13 +438,13 @@ public class HTTPClient implements Closeable {
      * @param username user name for HTTP authentication : only sent requesting localhost
      * @param pass password for HTTP authentication : only sent when requesting localhost
      * @param maxBytes to get
-     * @param concurrent whether a new thread should be created to handle the request. 
+     * @param concurrent whether a new thread should be created to handle the request.
      * Ignored when requesting localhost or when the authentication password is not null
      * @return content bytes
      * @throws IOException
      */
     public byte[] GETbytes(final String uri, final String username, final String pass, final int maxBytes, final boolean concurrent) throws IOException {
-        return GETbytes(new MultiProtocolURL(uri), username, pass, maxBytes, concurrent);
+        return this.GETbytes(new MultiProtocolURL(uri), username, pass, maxBytes, concurrent);
     }
 
 
@@ -427,7 +455,7 @@ public class HTTPClient implements Closeable {
      * @param username user name for HTTP authentication : only sent requesting localhost
      * @param pass password for HTTP authentication : only sent when requesting localhost
      * @param maxBytes maximum response bytes to read
-     * @param concurrent whether a new thread should be created to handle the request. 
+     * @param concurrent whether a new thread should be created to handle the request.
      * Ignored when requesting localhost or when the authentication password is not null
      * @return content bytes
      * @throws IOException
@@ -435,43 +463,43 @@ public class HTTPClient implements Closeable {
     public byte[] GETbytes(final MultiProtocolURL url, final String username, final String pass, final int maxBytes, final boolean concurrent) throws IOException {
         final boolean localhost = Domains.isLocalhost(url.getHost());
         final String urix = url.toNormalform(true);
-        
+
         try {
             this.currentRequest = new HttpGet(urix);
-        } catch (IllegalArgumentException e) {
+        } catch (final IllegalArgumentException e) {
             throw new IOException(e.getMessage()); // can be caused  at java.net.URI.create()
         }
-        if (!localhost) setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
+        if (!localhost) this.setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
         if (!localhost || pass == null) {
-            return getContentBytes(maxBytes, concurrent);
+            return this.getContentBytes(maxBytes, concurrent);
         }
-        
-        CredentialsProvider credsProvider = new BasicCredentialsProvider();
+
+        final CredentialsProvider credsProvider = new BasicCredentialsProvider();
         credsProvider.setCredentials(
-        		new AuthScope("localhost", url.getPort()),
+                new AuthScope("localhost", url.getPort()),
                 new UsernamePasswordCredentials(username, pass));
-        
-        try (final CloseableHttpClient httpclient = clientBuilder.setDefaultCredentialsProvider(credsProvider)
+
+        try (final CloseableHttpClient httpclient = this.clientBuilder.setDefaultCredentialsProvider(credsProvider)
                 .setDefaultAuthSchemeRegistry(AUTHSCHEMEREGISTRY).build()) {
             this.httpResponse = httpclient.execute(this.currentRequest);
-            HttpEntity httpEntity = this.httpResponse.getEntity();
+            final HttpEntity httpEntity = this.httpResponse.getEntity();
             if (httpEntity != null) {
-                if (getStatusCode() == HttpStatus.SC_OK) {
-        			if (maxBytes >= 0 && httpEntity.getContentLength() > maxBytes) {
-        				/* When anticipated content length is already known and exceed the specified limit : 
-        				 * throw an exception and abort the connection, consistently with getByteArray() implementation 
-        				 * Otherwise returning null and consuming fully the entity can be very long on large resources */
-        				throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxBytes));
-        			}
+                if (this.getStatusCode() == HttpStatus.SC_OK) {
+                    if (maxBytes >= 0 && httpEntity.getContentLength() > maxBytes) {
+                        /* When anticipated content length is already known and exceed the specified limit :
+                         * throw an exception and abort the connection, consistently with getByteArray() implementation
+                         * Otherwise returning null and consuming fully the entity can be very long on large resources */
+                        throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxBytes));
+                    }
                     return getByteArray(httpEntity, maxBytes);
                 }
             }
         } finally {
-            close();
+            this.close();
         }
         return null;
     }
-    
+
     /**
      * This method GETs a page from the server.
      * to be used for streaming out
@@ -481,7 +509,7 @@ public class HTTPClient implements Closeable {
      * @throws IOException
      */
     public void GET(final String uri, final boolean concurrent) throws IOException {
-    	GET(new MultiProtocolURL(uri), concurrent);
+        this.GET(new MultiProtocolURL(uri), concurrent);
     }
 
     /**
@@ -495,15 +523,15 @@ public class HTTPClient implements Closeable {
     public void GET(final MultiProtocolURL url, final boolean concurrent) throws IOException {
         if (this.currentRequest != null) throw new IOException("Client is in use!");
         final String urix = url.toNormalform(true);
-        
+
         try {
             this.currentRequest = new HttpGet(urix);
-        } catch (IllegalArgumentException e) {
+        } catch (final IllegalArgumentException e) {
             throw new IOException(e.getMessage()); // can be caused  at java.net.URI.create()
         }
-        setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
-        
-        execute(concurrent);
+        this.setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
+
+        this.execute(concurrent);
     }
 
     /**
@@ -514,7 +542,7 @@ public class HTTPClient implements Closeable {
      * @throws IOException
      */
     public HttpResponse HEADResponse(final String uri, final boolean concurrent) throws IOException {
-    	return HEADResponse(new MultiProtocolURL(uri), concurrent);
+        return this.HEADResponse(new MultiProtocolURL(uri), concurrent);
     }
 
     /**
@@ -526,9 +554,9 @@ public class HTTPClient implements Closeable {
      */
     public HttpResponse HEADResponse(final MultiProtocolURL url, final boolean concurrent) throws IOException {
         this.currentRequest = new HttpHead(url.toNormalform(true));
-        setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
-    	execute(concurrent);
-    	return this.httpResponse;
+        this.setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
+        this.execute(concurrent);
+        return this.httpResponse;
     }
 
     /**
@@ -543,10 +571,10 @@ public class HTTPClient implements Closeable {
      */
     /*
     public void POST(final String uri, final InputStream instream, final long length, final boolean concurrent) throws IOException {
-    	POST(new MultiProtocolURL(uri), instream, length, concurrent);
+        POST(new MultiProtocolURL(uri), instream, length, concurrent);
     }
      */
-    
+
     /**
      * This method POSTs a page from the server.
      * to be used for streaming out
@@ -558,16 +586,16 @@ public class HTTPClient implements Closeable {
      * @throws IOException
      */
     public void POST(final MultiProtocolURL url, final InputStream instream, final long length, final boolean concurrent) throws IOException {
-    	if (this.currentRequest != null) throw new IOException("Client is in use!");
-    	this.currentRequest = new HttpPost(url.toNormalform(true));
+        if (this.currentRequest != null) throw new IOException("Client is in use!");
+        this.currentRequest = new HttpPost(url.toNormalform(true));
         String host = url.getHost();
         if (host == null) host = Domains.LOCALHOST;
-        setHost(host); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
+        this.setHost(host); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
         final NonClosingInputStreamEntity inputStreamEntity = new NonClosingInputStreamEntity(instream, length);
-    	// statistics
-    	this.upbytes = length;
-    	((HttpPost) this.currentRequest).setEntity(inputStreamEntity);
-    	execute(concurrent);
+        // statistics
+        this.upbytes = length;
+        ((HttpPost) this.currentRequest).setEntity(inputStreamEntity);
+        this.execute(concurrent);
     }
 
     /**
@@ -584,7 +612,7 @@ public class HTTPClient implements Closeable {
         return POSTbytes(url, url.getHost(), parts, usegzip, concurrent);
     }
      */
-    
+
     /**
      * send data to the server named by vhost
      *
@@ -596,9 +624,9 @@ public class HTTPClient implements Closeable {
      * @throws IOException
      */
     public byte[] POSTbytes(final MultiProtocolURL url, final String vhost, final Map<String, ContentBody> post, final boolean usegzip, final boolean concurrent) throws IOException {
-    	return POSTbytes(url, vhost, post, null, null, usegzip, concurrent);
+        return this.POSTbytes(url, vhost, post, null, null, usegzip, concurrent);
     }
-    
+
     /**
      * Send data using HTTP POST method to the server named by vhost
      *
@@ -611,16 +639,16 @@ public class HTTPClient implements Closeable {
      * @return response body
      * @throws IOException when an error occurred
      */
-    public byte[] POSTbytes(final MultiProtocolURL url, final String vhost, final Map<String, ContentBody> post, 
-    		final String userName, final String password, final boolean usegzip, final boolean concurrent) throws IOException {
+    public byte[] POSTbytes(final MultiProtocolURL url, final String vhost, final Map<String, ContentBody> post,
+            final String userName, final String password, final boolean usegzip, final boolean concurrent) throws IOException {
         this.currentRequest = new HttpPost(url.toNormalform(true));
-    	final boolean localhost = Domains.isLocalhost(url.getHost());
-        if (!localhost) setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
-    	if (vhost == null) setHost(Domains.LOCALHOST);
-    	
-    	final MultipartEntityBuilder entityBuilder = MultipartEntityBuilder.create();
-    	for (final Entry<String,ContentBody> part : post.entrySet()) entityBuilder.addPart(part.getKey(), part.getValue());
-    	final HttpEntity multipartEntity = entityBuilder.build();
+        final boolean localhost = Domains.isLocalhost(url.getHost());
+        if (!localhost) this.setHost(url.getHost()); // overwrite resolved IP, needed for shared web hosting DO NOT REMOVE, see http://en.wikipedia.org/wiki/Shared_web_hosting_service
+        if (vhost == null) this.setHost(Domains.LOCALHOST);
+
+        final MultipartEntityBuilder entityBuilder = MultipartEntityBuilder.create();
+        for (final Entry<String,ContentBody> part : post.entrySet()) entityBuilder.addPart(part.getKey(), part.getValue());
+        final HttpEntity multipartEntity = entityBuilder.build();
         // statistics
         this.upbytes = multipartEntity.getContentLength();
 
@@ -629,27 +657,27 @@ public class HTTPClient implements Closeable {
         } else {
             ((HttpPost) this.currentRequest).setEntity(multipartEntity);
         }
-        
+
         if (!localhost || password == null) {
-            return getContentBytes(Integer.MAX_VALUE, concurrent);
+            return this.getContentBytes(Integer.MAX_VALUE, concurrent);
         }
-        
+
         final CredentialsProvider credsProvider = new BasicCredentialsProvider();
         credsProvider.setCredentials(
                 new AuthScope("localhost", url.getPort()),
                 new UsernamePasswordCredentials(userName, password));
 
-        try (final CloseableHttpClient httpclient = clientBuilder.setDefaultCredentialsProvider(credsProvider)
+        try (final CloseableHttpClient httpclient = this.clientBuilder.setDefaultCredentialsProvider(credsProvider)
                 .setDefaultAuthSchemeRegistry(AUTHSCHEMEREGISTRY).build()) {
             this.httpResponse = httpclient.execute(this.currentRequest);
-            HttpEntity httpEntity = this.httpResponse.getEntity();
+            final HttpEntity httpEntity = this.httpResponse.getEntity();
             if (httpEntity != null) {
-                if (getStatusCode() == HttpStatus.SC_OK) {
+                if (this.getStatusCode() == HttpStatus.SC_OK) {
                     return getByteArray(httpEntity, Integer.MAX_VALUE);
                 }
             }
         } finally {
-            close();
+            this.close();
         }
         return null;
     }
@@ -680,88 +708,88 @@ public class HTTPClient implements Closeable {
      */
 
     /**
-	 *
-	 * @return HttpResponse from call
-	 */
+     *
+     * @return HttpResponse from call
+     */
     public HttpResponse getHttpResponse() {
-		return this.httpResponse;
-	}
+        return this.httpResponse;
+    }
 
-	/**
-	 *
-	 * @return status code from http request
-	 */
+    /**
+     *
+     * @return status code from http request
+     */
     public int getStatusCode() {
-	    return this.httpResponse.getStatusLine().getStatusCode();
-	}
-    
+        return this.httpResponse.getStatusLine().getStatusCode();
+    }
+
     /**
      * Get Mime type from the response header
      * @return mime type (trimmed and lower cased) or null when not specified
      */
-	public String getMimeType() {
-		String mimeType = null;
-		if (this.httpResponse != null) {
+    public String getMimeType() {
+        String mimeType = null;
+        if (this.httpResponse != null) {
 
-			Header contentType = this.httpResponse.getFirstHeader(HttpHeaders.CONTENT_TYPE);
+            final Header contentType = this.httpResponse.getFirstHeader(HttpHeaders.CONTENT_TYPE);
 
-			if (contentType != null) {
+            if (contentType != null) {
 
-				mimeType = contentType.getValue();
+                mimeType = contentType.getValue();
 
-				if (mimeType != null) {
-					mimeType = mimeType.trim().toLowerCase(Locale.ROOT);
+                if (mimeType != null) {
+                    mimeType = mimeType.trim().toLowerCase(Locale.ROOT);
 
-					final int pos = mimeType.indexOf(';');
-					if(pos >= 0) {
-						mimeType = mimeType.substring(0, pos);
-					}
-				}
-			}
-		}
-		return mimeType;
-	}
-	
-	/**
-	 * Get character encoding from the response header
-	 * 
-	 * @return the characters set name or null when not specified
-	 */
-	public String getCharacterEncoding() {
-		String charsetName = null;
-		if (this.httpResponse != null) {
+                    final int pos = mimeType.indexOf(';');
+                    if(pos >= 0) {
+                        mimeType = mimeType.substring(0, pos);
+                    }
+                }
+            }
+        }
+        return mimeType;
+    }
 
-			Header contentTypeHeader = this.httpResponse.getFirstHeader(HttpHeaders.CONTENT_TYPE);
+    /**
+     * Get character encoding from the response header
+     *
+     * @return the characters set name or null when not specified
+     */
+    public String getCharacterEncoding() {
+        String charsetName = null;
+        if (this.httpResponse != null) {
 
-			if (contentTypeHeader != null) {
+            final Header contentTypeHeader = this.httpResponse.getFirstHeader(HttpHeaders.CONTENT_TYPE);
 
-				String contentType = contentTypeHeader.getValue();
+            if (contentTypeHeader != null) {
 
-				if (contentType != null) {
+                final String contentType = contentTypeHeader.getValue();
 
-					final String[] parts = CommonPattern.SEMICOLON.split(contentType);
-					if (parts != null && parts.length > 1) {
+                if (contentType != null) {
 
-						for (int i = 1; i < parts.length; i++) {
-							final String param = parts[i].trim();
-							if (param.startsWith("charset=")) {
-								String charset = param.substring("charset=".length()).trim();
-								if (charset.length() > 0 && (charset.charAt(0) == '\"' || charset.charAt(0) == '\'')) {
-									charset = charset.substring(1);
-								}
-								if (charset.endsWith("\"") || charset.endsWith("'")) {
-									charset = charset.substring(0, charset.length() - 1);
-								}
-								charsetName = charset.trim();
-							}
-						}
-					}
-				}
-			}
-		}
+                    final String[] parts = CommonPattern.SEMICOLON.split(contentType);
+                    if (parts != null && parts.length > 1) {
 
-		return charsetName;
-	}
+                        for (int i = 1; i < parts.length; i++) {
+                            final String param = parts[i].trim();
+                            if (param.startsWith("charset=")) {
+                                String charset = param.substring("charset=".length()).trim();
+                                if (charset.length() > 0 && (charset.charAt(0) == '\"' || charset.charAt(0) == '\'')) {
+                                    charset = charset.substring(1);
+                                }
+                                if (charset.endsWith("\"") || charset.endsWith("'")) {
+                                    charset = charset.substring(0, charset.length() - 1);
+                                }
+                                charsetName = charset.trim();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return charsetName;
+    }
 
     /**
      * This method gets direct access to the content-stream
@@ -771,13 +799,13 @@ public class HTTPClient implements Closeable {
      * @return the content as InputStream
      * @throws IOException
      */
-	public InputStream getContentstream() throws IOException {
+    public InputStream getContentstream() throws IOException {
         if (this.httpResponse != null && this.currentRequest != null) {
             final HttpEntity httpEntity = this.httpResponse.getEntity();
             if (httpEntity != null) try {
                     return httpEntity.getContent();
             } catch (final IOException e) {
-                close();
+                this.close();
                 throw e;
             }
         }
@@ -791,14 +819,14 @@ public class HTTPClient implements Closeable {
      * @param outputStream
      * @throws IOException
      */
-	public void writeTo(final OutputStream outputStream) throws IOException {
+    public void writeTo(final OutputStream outputStream) throws IOException {
         if (this.httpResponse != null && this.currentRequest != null) {
             final HttpEntity httpEntity = this.httpResponse.getEntity();
             if (httpEntity != null) try {
                 httpEntity.writeTo(outputStream);
                 outputStream.flush();
             } finally {
-                close();
+                this.close();
             }
         }
     }
@@ -809,106 +837,218 @@ public class HTTPClient implements Closeable {
      *
      * @throws IOException
      */
-	@Override
+    @Override
     public void close() throws IOException {
-		try {
-			if (this.httpResponse != null) {
+        try {
+            if (this.httpResponse != null) {
                 // Ensures that the entity content Stream is closed.
                 EntityUtils.consumeQuietly(this.httpResponse.getEntity());
-				this.httpResponse.close();
-			}
-			if (this.client != null) {
-			    client.close();
-			}
-		} finally {
-			if (this.currentRequest != null) {
-				ConnectionInfo.removeConnection(this.currentRequest.hashCode());
-				this.currentRequest.abort();
-				this.currentRequest = null;
-			}
-		}
-	}
+                this.httpResponse.close();
+            }
+            if (this.client != null) {
+                this.client.close();
+            }
+        } finally {
+            if (this.currentRequest != null) {
+                ConnectionInfo.removeConnection(this.currentRequest.hashCode());
+                this.currentRequest.abort();
+                this.currentRequest = null;
+            }
+        }
+    }
 
     private byte[] getContentBytes(final int maxBytes, final boolean concurrent) throws IOException {
         try {
-            execute(concurrent);
+            this.execute(concurrent);
             if (this.httpResponse == null) return null;
             // get the response body
             final HttpEntity httpEntity = this.httpResponse.getEntity();
             if (httpEntity != null) {
-                if (getStatusCode() == HttpStatus.SC_OK) {
-        			if (maxBytes >= 0 && httpEntity.getContentLength() > maxBytes) {
-        				/* When anticipated content length is already known and exceed the specified limit : 
-        				 * throw an exception and abort the connection, consistently with getByteArray() implementation 
-        				 * Otherwise returning null and consuming fully the entity can be very long on large resources */
-        				throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxBytes));
-        			}
+                if (this.getStatusCode() == HttpStatus.SC_OK) {
+                    if (maxBytes >= 0 && httpEntity.getContentLength() > maxBytes) {
+                        /* When anticipated content length is already known and exceed the specified limit :
+                         * throw an exception and abort the connection, consistently with getByteArray() implementation
+                         * Otherwise returning null and consuming fully the entity can be very long on large resources */
+                        throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxBytes));
+                    }
                     return getByteArray(httpEntity, maxBytes);
                 }
             }
         } finally {
-        	close();
+            this.close();
         }
-    	return null;
+        return null;
     }
 
     private void execute(final boolean concurrent) throws IOException {
-    	final HttpClientContext context = HttpClientContext.create();
-    	context.setRequestConfig(reqConfBuilder.build());
-    	if (this.host != null)
-    		context.setTargetHost(new HttpHost(this.host));
-    	
-    	setHeaders();
-    	// statistics
-    	storeConnectionInfo();
-    	// execute the method; some asserts confirm that that the request can be send with Content-Length and is therefore not terminated by EOF
-	    if (this.currentRequest instanceof HttpEntityEnclosingRequest) {
-	        final HttpEntityEnclosingRequest hrequest = (HttpEntityEnclosingRequest) this.currentRequest;
-	        final HttpEntity entity = hrequest.getEntity();
-	        assert entity != null;
-	        //assert !entity.isChunked();
-	        //assert entity.getContentLength() >= 0;
-	        assert !hrequest.expectContinue();
-	    }
+        final HttpClientContext context = HttpClientContext.create();
+        context.setRequestConfig(this.reqConfBuilder.build());
+        //if (this.host != null) context.setTargetHost(new HttpHost(this.host));
 
-	    final String initialThreadName = Thread.currentThread().getName();
-	    final String uri = this.currentRequest.getURI().toString();
-	    Thread.currentThread().setName("HTTPClient-" + uri);
+        this.setHeaders();
+        // statistics
+        this.storeConnectionInfo();
+        // execute the method; some asserts confirm that that the request can be send with Content-Length and is therefore not terminated by EOF
+        if (this.currentRequest instanceof HttpEntityEnclosingRequest) {
+            final HttpEntityEnclosingRequest hrequest = (HttpEntityEnclosingRequest) this.currentRequest;
+            final HttpEntity entity = hrequest.getEntity();
+            assert entity != null;
+            //assert !entity.isChunked();
+            //assert entity.getContentLength() >= 0;
+            assert !hrequest.expectContinue();
+        }
+
+        final String initialThreadName = Thread.currentThread().getName();
+        final String uri = this.currentRequest.getURI().toString();
+        Thread.currentThread().setName("HTTPClient-" + uri);
         final long time = System.currentTimeMillis();
-	    try {
-	        
-	        this.client = clientBuilder.build();
-	        if (concurrent) {
-	            FutureTask<CloseableHttpResponse> t = new FutureTask<CloseableHttpResponse>(new Callable<CloseableHttpResponse>() {
-	                @Override
-                    public CloseableHttpResponse call() throws ClientProtocolException, IOException {
-	                    CloseableHttpResponse response = client.execute(currentRequest, context);
-	                    return response;
-	                }
-	            });
-	            executor.execute(t);
-	            try {
-	                this.httpResponse = t.get(this.timeout, TimeUnit.MILLISECONDS);
-	            } catch (ExecutionException e) {
-	                throw e.getCause();
-	            } catch (Throwable e) {}
-	            try {t.cancel(true);} catch (Throwable e) {}
-	            if (this.httpResponse == null) {
-	                throw new IOException("timout to client after " + this.timeout + "ms" + " for url " + uri);
-	            }
-	        } else {
-	            this.httpResponse = client.execute(this.currentRequest, context);
-	        }
+        try {
+
+            this.client = this.clientBuilder.build();
+            if (concurrent) {
+                final FutureTask<CloseableHttpResponse> t = new FutureTask<>(() -> {
+                    final CloseableHttpResponse response = HTTPClient.this.client.execute(HTTPClient.this.currentRequest, context);
+                    return response;
+                });
+                executor.execute(t);
+                try {
+                    this.httpResponse = t.get(this.timeout, TimeUnit.MILLISECONDS);
+                } catch (ExecutionException e) {
+                    Throwable c = e.getCause();
+                    if (c instanceof IOException) throw (IOException) c;
+                    throw new IOException(c == null ? e : c);
+                } catch (TimeoutException e) {
+                    t.cancel(true);
+                    throw new IOException("timeout after " + this.timeout + " ms for url " + uri, e);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("interrupted while executing " + uri, e);
+                }
+            } else {
+                this.httpResponse = this.client.execute(this.currentRequest, context);
+            }
             this.httpResponse.setHeader(HeaderFramework.RESPONSE_TIME_MILLIS, Long.toString(System.currentTimeMillis() - time));
         } catch (final Throwable e) {
-            close();
-            throw new IOException("Client can't execute: "
-            		+ (e.getCause() == null ? e.getMessage() : e.getCause().getMessage())
-            		+ " duration=" + Long.toString(System.currentTimeMillis() - time) + " for url " + uri);
+            final long runtime = System.currentTimeMillis() - time;
+
+            // Build rich diagnostics
+            final String diag = buildDiagnostics(
+                e,
+                this.currentRequest,
+                context,
+                this.host,
+                this.timeout,
+                concurrent,
+                runtime
+            );
+
+            // Ensure resources are closed before bubbling up
+            try { this.close(); } catch (IOException ignore) {}
+
+            // Preserve the original stack as cause
+            final IOException io = (e instanceof IOException) ? (IOException) e
+                    : new IOException(e.getMessage(), e);
+
+            throw new IOException(diag, io);
         } finally {
-        	/* Restore the thread initial name */
-        	Thread.currentThread().setName(initialThreadName);
+            /* Restore the thread initial name */
+            Thread.currentThread().setName(initialThreadName);
         }
+    }
+
+    private static String buildDiagnostics(
+            Throwable e,
+            HttpUriRequest req,
+            HttpClientContext ctx,
+            String vhost,
+            long timeoutMs,
+            boolean concurrent,
+            long durationMs) {
+
+        final StringBuilder sb = new StringBuilder(256);
+
+        // 1) Exception chain (class: message -> root cause)
+        sb.append("HTTPClient failure: ")
+          .append(exceptionChain(e));
+
+        // 2) Request line & basic info
+        String method = req != null ? req.getMethod() : "?";
+        String url    = req != null && req.getURI() != null ? req.getURI().toString() : "?";
+        sb.append(" | request=").append(method).append(" ").append(url);
+
+        // 3) Target & routing
+        HttpHost target = ctx != null ? ctx.getTargetHost() : null;
+        if (target != null) {
+            sb.append(" | target=").append(target.toURI());
+        }
+
+        // Route (proxy? TLS? direct?)
+        try {
+            org.apache.http.conn.routing.HttpRoute route =
+                (org.apache.http.conn.routing.HttpRoute) (ctx != null ? ctx.getAttribute(HttpClientContext.HTTP_ROUTE) : null);
+            if (route != null) {
+                sb.append(" | route=").append(route.toString());
+                if (route.getProxyHost() != null) sb.append(" viaProxy=").append(route.getProxyHost());
+            }
+        } catch (Throwable ignore) {}
+
+        // 4) Virtual host/SNI intent
+        if (vhost != null) sb.append(" | vhost=").append(vhost);
+        sb.append(" | sniEnabled=").append(ENABLE_SNI_EXTENSION.get());
+
+        // 5) DNS quick hint (best-effort)
+        try {
+            String host = req != null && req.getURI() != null ? req.getURI().getHost() : null;
+            if (host != null) {
+                java.net.InetAddress ip = net.yacy.cora.protocol.Domains.dnsResolve(host);
+                if (ip != null) sb.append(" | resolvedIp=").append(ip.getHostAddress());
+            }
+        } catch (Throwable ignore) {}
+
+        // 6) Timeouts & duration
+        sb.append(" | timeouts(ms){connect=")
+          .append(reqConfValue(ctx, "http.socket.timeout", "socket"))      // best-effort
+          .append(", lease=")
+          .append(reqConfValue(ctx, "http.connection-request.timeout", "lease"))
+          .append(", connect=")
+          .append(reqConfValue(ctx, "http.connection.timeout", "connect"))
+          .append("} | deadline=").append(timeoutMs)
+          .append(" | duration=").append(durationMs)
+          .append(" | concurrent=").append(concurrent);
+
+        return sb.toString();
+    }
+
+    /** Render exception class chain succinctly: IOException(ConnectException: Connection refused) … */
+    private static String exceptionChain(Throwable e) {
+        StringBuilder sb = new StringBuilder();
+        int depth = 0;
+        while (e != null && depth < 5) {
+            if (depth > 0) sb.append(" -> ");
+            sb.append(e.getClass().getSimpleName());
+            String msg = e.getMessage();
+            if (msg != null && !msg.isEmpty()) {
+                sb.append(": ").append(msg);
+            }
+            e = e.getCause();
+            depth++;
+        }
+        return sb.toString();
+    }
+
+    /** Best-effort extraction of timeouts from the context; falls back to "n/a". */
+    private static String reqConfValue(HttpClientContext ctx, String key, String label) {
+        try {
+            RequestConfig rc = ctx != null ? ctx.getRequestConfig() : null;
+            if (rc != null) {
+                switch (label) {
+                    case "socket":  return String.valueOf(rc.getSocketTimeout());
+                    case "lease":   return String.valueOf(rc.getConnectionRequestTimeout());
+                    case "connect": return String.valueOf(rc.getConnectTimeout());
+                }
+            }
+        } catch (Throwable ignore) {}
+        return "n/a";
     }
 
     /**
@@ -918,98 +1058,96 @@ public class HTTPClient implements Closeable {
      * @return content bytes or null when entity content is null.
      * @throws IOException when a read error occured or content length is over maxBytes
      */
-	public static byte[] getByteArray(final HttpEntity entity, int maxBytes) throws IOException {
-		try (final InputStream instream = entity.getContent()) {
-		    if (instream == null) {
-		        return null;
-		    }
-			long contentLength = entity.getContentLength();
-			/*
-			 * When no maxBytes is specified, the default limit is
-			 * Integer.MAX_VALUE as a byte array size can not be over
-			 */
-			if (maxBytes < 0) {
-				maxBytes = Integer.MAX_VALUE;
-			}
-			/*
-			 * Content length may already be known now : check it before
-			 * downloading
-			 */
-			if (contentLength > maxBytes) {
-				throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxBytes));
-			}
-			int initialSize = Math.min(maxBytes, (int) contentLength);
-			/* ContentLenght may be negative because unknown for now */
-			if (initialSize < 0) {
-				initialSize = 4096;
-			}
-			final ByteArrayBuffer buffer = new ByteArrayBuffer(initialSize);
-			byte[] tmp = new byte[4096];
-			int l = 0;
-			/* Sum is a long to enable check against Integer.MAX_VALUE */
-			long sum = 0;
-			while ((l = instream.read(tmp)) != -1) {
-				sum += l;
-				/*
-				 * Check total length while downloading as content length might
-				 * not be known at beginning
-				 */
-				if (sum > maxBytes) {
-					throw new IOException("Download exceeded maximum value of " + Formatter.bytesToString(maxBytes));
-				}
-				buffer.append(tmp, 0, l);
-			}
-			return buffer.toByteArray();
-		} catch (final OutOfMemoryError e) {
-			throw new IOException(e.toString());
-		} finally {
-		    // Ensures that the entity content is fully consumed and the content stream, if exists, is closed.
+    public static byte[] getByteArray(final HttpEntity entity, int maxBytes) throws IOException {
+        try (final InputStream instream = entity.getContent()) {
+            if (instream == null) {
+                return null;
+            }
+            final long contentLength = entity.getContentLength();
+            /*
+             * When no maxBytes is specified, the default limit is
+             * Integer.MAX_VALUE as a byte array size can not be over
+             */
+            if (maxBytes < 0) {
+                maxBytes = Integer.MAX_VALUE;
+            }
+            /*
+             * Content length may already be known now : check it before
+             * downloading
+             */
+            if (contentLength > maxBytes) {
+                throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxBytes));
+            }
+            int initialSize = Math.min(maxBytes, (int) contentLength);
+            /* ContentLenght may be negative because unknown for now */
+            if (initialSize < 0) {
+                initialSize = 4096;
+            }
+            final ByteArrayBuffer buffer = new ByteArrayBuffer(initialSize);
+            final byte[] tmp = new byte[4096];
+            int l = 0;
+            /* Sum is a long to enable check against Integer.MAX_VALUE */
+            long sum = 0;
+            while ((l = instream.read(tmp)) != -1) {
+                sum += l;
+                /*
+                 * Check total length while downloading as content length might
+                 * not be known at beginning
+                 */
+                if (sum > maxBytes) {
+                    throw new IOException("Download exceeded maximum value of " + Formatter.bytesToString(maxBytes));
+                }
+                buffer.append(tmp, 0, l);
+            }
+            return buffer.toByteArray();
+        } catch (final OutOfMemoryError e) {
+            throw new IOException(e.toString());
+        } finally {
+            // Ensures that the entity content is fully consumed and the content stream, if exists, is closed.
             EntityUtils.consume(entity);
-		}
-	}
+        }
+    }
 
     private void setHeaders() {
-    	if (this.headers != null) {
+        if (this.headers != null) {
             for (final Entry<String, String> entry : this.headers) {
                 this.currentRequest.setHeader(entry.getKey(),entry.getValue());
             }
-    	}
-    	if (this.host != null) this.currentRequest.setHeader(HTTP.TARGET_HOST, this.host);
-    	this.currentRequest.setHeader(HTTP.CONN_DIRECTIVE, "close"); // don't keep alive, prevent CLOSE_WAIT state
+        }
+
+        this.currentRequest.setHeader(HTTP.CONN_DIRECTIVE, "close"); // don't keep alive, prevent CLOSE_WAIT state
     }
 
     private void storeConnectionInfo() {
-    	final int port = this.currentRequest.getURI().getPort();
-    	final String thost = this.currentRequest.getURI().getHost();
-    	//assert thost != null : "uri = " + httpUriRequest.getURI().toString();
-    	ConnectionInfo.addConnection(new ConnectionInfo(
-    	        this.currentRequest.getURI().getScheme(),
-    			port == -1 ? thost : thost + ":" + port,
-    			        this.currentRequest.getMethod() + " " + this.currentRequest.getURI().getPath(),
-    			        this.currentRequest.hashCode(),
-    			System.currentTimeMillis(),
-    			this.upbytes));
+        final int port = this.currentRequest.getURI().getPort();
+        final String thost = this.currentRequest.getURI().getHost();
+        //assert thost != null : "uri = " + httpUriRequest.getURI().toString();
+        ConnectionInfo.addConnection(new ConnectionInfo(
+                this.currentRequest.getURI().getScheme(),
+                port == -1 ? thost : thost + ":" + port,
+                        this.currentRequest.getMethod() + " " + this.currentRequest.getURI().getPath(),
+                        this.currentRequest.hashCode(),
+                System.currentTimeMillis(),
+                this.upbytes));
     }
 
     private static SSLConnectionSocketFactory getSSLSocketFactory() {
-    	final TrustManager trustManager = new X509TrustManager() {
+        final TrustManager trustManager = new X509TrustManager() {
             @Override
-            public void checkClientTrusted(final X509Certificate[] chain, final String authType)
-                            throws CertificateException {
+            public void checkClientTrusted(final X509Certificate[] chain, final String authType) throws CertificateException {
             }
 
             @Override
-            public void checkServerTrusted(final X509Certificate[] chain, final String authType)
-                            throws CertificateException {
+            public void checkServerTrusted(final X509Certificate[] chain, final String authType) throws CertificateException {
             }
 
             @Override
             public X509Certificate[] getAcceptedIssuers() {
-                    return null;
+                return new X509Certificate[0];
             }
-    	};
-    	SSLContext sslContext = null;
-    	try {
+        };
+        SSLContext sslContext = null;
+        try {
             sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, new TrustManager[] { trustManager }, null);
         } catch (final NoSuchAlgorithmException e) {
@@ -1020,21 +1158,20 @@ public class HTTPClient implements Closeable {
             // e.printStackTrace();
         }
 
-        return new SSLConnectionSocketFactory(
-                sslContext,
-                new NoopHostnameVerifier()) {
-        	
-        	@Override
-        	protected void prepareSocket(SSLSocket socket) throws IOException {
-        		if(!ENABLE_SNI_EXTENSION.get()) {
-        			/* Set the SSLParameters server names to empty so we don't use SNI extension.
-        			 * See https://docs.oracle.com/javase/8/docs/technotes/guides/security/jsse/JSSERefGuide.html#ClientSNIExamples */
-        			final SSLParameters sslParams = socket.getSSLParameters();
-        			sslParams.setServerNames(Collections.emptyList());
-        			socket.setSSLParameters(sslParams);
-        		}
-        	}
+        return new SSLConnectionSocketFactory(sslContext, NoopHostnameVerifier.INSTANCE) {
+
+            @Override
+            protected void prepareSocket(final SSLSocket socket) throws IOException {
+                if (!ENABLE_SNI_EXTENSION.get()) {
+                    /* Set the SSLParameters server names to empty so we don't use SNI extension.
+                     * See https://docs.oracle.com/javase/8/docs/technotes/guides/security/jsse/JSSERefGuide.html#ClientSNIExamples */
+                    final SSLParameters sslParams = socket.getSSLParameters();
+                    sslParams.setServerNames(Collections.emptyList());
+                    socket.setSSLParameters(sslParams);
+                }
+            }
         };
+
     }
 
     /**
@@ -1044,15 +1181,15 @@ public class HTTPClient implements Closeable {
      *
      * @param defaultHttpClient
      */
-	private static ConnectionKeepAliveStrategy customKeepAliveStrategy() {
-		return new DefaultConnectionKeepAliveStrategy() {
-			@Override
-			public long getKeepAliveDuration(HttpResponse response, HttpContext context) {
-				long keepAlive = super.getKeepAliveDuration(response, context);
-				return Math.min(Math.max(keepAlive, 5000), 25000);
-			}
-		};
-	}
+    private static ConnectionKeepAliveStrategy customKeepAliveStrategy() {
+        return new DefaultConnectionKeepAliveStrategy() {
+            @Override
+            public long getKeepAliveDuration(final HttpResponse response, final HttpContext context) {
+                final long keepAlive = super.getKeepAliveDuration(response, context);
+                return Math.min(Math.max(keepAlive, 5000), 25000);
+            }
+        };
+    }
 
     /**
      * testing
@@ -1084,29 +1221,30 @@ public class HTTPClient implements Closeable {
             }
         }
         // Head some
-//		try {
-//			client.HEADResponse(url);
-//		} catch (final IOException e) {
-//			e.printStackTrace();
-//		}
+//        try {
+//            client.HEADResponse(url);
+//        } catch (final IOException e) {
+//            e.printStackTrace();
+//        }
         for (final Header header: client.getHttpResponse().getAllHeaders()) {
             System.out.println("Header " + header.getName() + " : " + header.getValue());
-//			for (HeaderElement element: header.getElements())
-//				System.out.println("Element " + element.getName() + " : " + element.getValue());
+//            for (HeaderElement element: header.getElements())
+//                System.out.println("Element " + element.getName() + " : " + element.getValue());
         }
 //        System.out.println(client.getHttpResponse().getLocale());
         System.out.println(client.getHttpResponse().getProtocolVersion());
         System.out.println(client.getHttpResponse().getStatusLine());
         // Post some
-//		try {
-//			System.out.println(UTF8.String(client.POSTbytes(url, newparts)));
-//		} catch (final IOException e1) {
-//			e1.printStackTrace();
-//		}
+//        try {
+//            System.out.println(UTF8.String(client.POSTbytes(url, newparts)));
+//        } catch (final IOException e1) {
+//            e1.printStackTrace();
+//        }
         // Close out connection manager
         try {
-                HTTPClient.closeConnectionManager();
-        } catch (final InterruptedException e) {
+            client.close();
+            HTTPClient.closeConnectionManager();
+        } catch (final InterruptedException | IOException e) {
                 e.printStackTrace();
         }
     }

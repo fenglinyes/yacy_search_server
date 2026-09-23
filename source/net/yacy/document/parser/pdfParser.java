@@ -39,8 +39,10 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.COSName;
-import org.apache.pdfbox.io.MemoryUsageSetting;
+import org.apache.pdfbox.io.RandomAccessRead;
+import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -51,7 +53,6 @@ import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
 import org.apache.pdfbox.text.PDFTextStripper;
 
-import net.yacy.cora.document.encoding.UTF8;
 import net.yacy.cora.document.id.AnchorURL;
 import net.yacy.cora.document.id.DigestURL;
 import net.yacy.cora.document.id.MultiProtocolURL;
@@ -67,9 +68,6 @@ import net.yacy.kelondro.util.MemoryControl;
 
 public class pdfParser extends AbstractParser implements Parser {
 
-    public static boolean individualPages = false;
-    public static String individualPagePropertyname = "page";
-    
     public pdfParser() {
         super("Acrobat Portable Document Parser");
         this.SUPPORTED_EXTENSIONS.add("pdf");
@@ -86,7 +84,7 @@ public class pdfParser extends AbstractParser implements Parser {
             final DigestURL location,
             final String mimeType,
             final String charset,
-            final VocabularyScraper scraper, 
+            final VocabularyScraper scraper,
             final int timezoneOffset,
             final InputStream source) throws Parser.Failure, InterruptedException {
 
@@ -98,8 +96,8 @@ public class pdfParser extends AbstractParser implements Parser {
         PDDocument pdfDoc;
         try {
             Thread.currentThread().setPriority(Thread.MIN_PRIORITY); // the pdfparser is a big pain
-            MemoryUsageSetting mus = MemoryUsageSetting.setupMixed(200*1024*1024);
-            pdfDoc = PDDocument.load(source, mus);
+            final RandomAccessRead readBuffer = new RandomAccessReadBuffer(source);
+            pdfDoc = Loader.loadPDF(readBuffer);
         } catch (final IOException e) {
             throw new Parser.Failure(e.getMessage(), location);
         } finally {
@@ -141,104 +139,42 @@ public class pdfParser extends AbstractParser implements Parser {
         if (docKeywordStr != null) {
             docKeywords = docKeywordStr.split(" |,");
         }
-        
+
         Document[] result = null;
         try {
             // get the links
         	final List<Collection<AnchorURL>> pdflinks = extractPdfLinks(pdfDoc);
-            
-            // get the fulltext (either per document or for each page)
-            final PDFTextStripper stripper = new PDFTextStripper(/*StandardCharsets.UTF_8.name()*/);
 
-            if (individualPages) {
-                // this is a hack which stores individual pages of the source pdf into individual index documents
-                // the new documents will get a virtual link with a post argument page=X appended to the original url
-                
-                // collect text
-                int pagecount = pdfDoc.getNumberOfPages();
-                String[] pages = new String[pagecount];
-                for (int page = 1; page <= pagecount; page++) {
-                    stripper.setStartPage(page);
-                    stripper.setEndPage(page);
-                    pages[page - 1] = stripper.getText(pdfDoc);
-                    //System.out.println("PAGE " + page + ": " + pages[page - 1]);
-                }
-                
-                // create individual documents for each page
-                assert pages.length == pdflinks.size() : "pages.length = " + pages.length + ", pdflinks.length = " + pdflinks.size();
-                result = new Document[Math.min(pages.length, pdflinks.size())];
-                String loc = location.toNormalform(true);
-                for (int page = 0; page < result.length; page++) {                    
-                    result[page] = new Document(
-                            new AnchorURL(loc + (loc.indexOf('?') > 0 ? '&' : '?') + individualPagePropertyname + '=' + (page + 1)), // these are virtual new pages; we cannot combine them with '#' as that would be removed when computing the urlhash
-                            mimeType,
-                            StandardCharsets.UTF_8.name(),
-                            this,
-                            null,
-                            docKeywords,
-                            singleList(docTitle),
-                            docAuthor,
-                            docPublisher,
-                            null,
-                            null,
-                            0.0d, 0.0d,
-                            pages == null || page > pages.length ? new byte[0] : UTF8.getBytes(pages[page]),
-                            pdflinks == null || page >= pdflinks.size() ? null : pdflinks.get(page),
-                            null,
-                            null,
-                            false,
-                            docDate);
-                }
-            } else {
-                // collect the whole text at once
-                final CharBuffer writer = new CharBuffer(odtParser.MAX_DOCSIZE);
-                byte[] contentBytes = new byte[0];
-                stripper.setEndPage(3); // get first 3 pages (always)
-                writer.append(stripper.getText(pdfDoc));
-                contentBytes = writer.getBytes(); // remember text in case of interrupting thread
+            // collect the whole text at once
+            final CharBuffer writer = new CharBuffer(odtParser.MAX_DOCSIZE);
+            byte[] contentBytes = new byte[0];
+            final PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setEndPage(Integer.MAX_VALUE);
+            writer.append(stripper.getText(pdfDoc));
+            contentBytes = writer.getBytes(); // remember text in case of interrupting thread
+            writer.close(); // free writer resources
 
-                if (pdfDoc.getNumberOfPages() > 3) { // spare creating/starting thread if all pages read
-                    stripper.setStartPage(4); // continue with page 4 (terminated, resulting in no text)
-                    stripper.setEndPage(Integer.MAX_VALUE); // set to default
-                    // we start the pdf parsing in a separate thread to ensure that it can be terminated
-                    final PDDocument pdfDocC = pdfDoc;
-                    final Thread t = new Thread("pdfParser.getText:" + location) {
-                        @Override
-                        public void run() {
-                            try {
-                                writer.append(stripper.getText(pdfDocC));
-                            } catch (final Throwable e) {}
-                        }
-                    };
-                    t.start();
-                    t.join(3000); // pdfbox likes to forget to terminate ... (quite often)
-                    if (t.isAlive()) t.interrupt();
-                    contentBytes = writer.getBytes(); // get final text before closing writer
-                    writer.close(); // free writer resources
-                }
-                
-                Collection<AnchorURL> pdflinksCombined = new HashSet<AnchorURL>();
-                for (Collection<AnchorURL> pdflinksx: pdflinks) if (pdflinksx != null) pdflinksCombined.addAll(pdflinksx);
-                result = new Document[]{new Document(
-                        location,
-                        mimeType,
-                        StandardCharsets.UTF_8.name(),
-                        this,
-                        null,
-                        docKeywords,
-                        singleList(docTitle),
-                        docAuthor,
-                        docPublisher,
-                        null,
-                        null,
-                        0.0d, 0.0d,
-                        contentBytes,
-                        pdflinksCombined,
-                        null,
-                        null,
-                        false,
-                        docDate)};
-            }         
+            final Collection<AnchorURL> pdflinksCombined = new HashSet<>();
+            for (final Collection<AnchorURL> pdflinksx: pdflinks) if (pdflinksx != null) pdflinksCombined.addAll(pdflinksx);
+            result = new Document[]{new Document(
+                    location,
+                    mimeType,
+                    StandardCharsets.UTF_8.name(),
+                    this,
+                    null,
+                    docKeywords,
+                    singleList(docTitle),
+                    docAuthor,
+                    docPublisher,
+                    null,
+                    null,
+                    0.0d, 0.0d,
+                    contentBytes,
+                    pdflinksCombined,
+                    null,
+                    null,
+                    false,
+                    docDate)};
         } catch (final Throwable e) {
             //throw new Parser.Failure(e.getMessage(), location);
         } finally {
@@ -248,7 +184,7 @@ public class pdfParser extends AbstractParser implements Parser {
         // clear cached resources in pdfbox.
         pdfDoc = null;
         clearPdfBoxCaches();
-        
+
         return result;
     }
 
@@ -258,25 +194,25 @@ public class pdfParser extends AbstractParser implements Parser {
      * @return all detected links
      */
     private List<Collection<AnchorURL>> extractPdfLinks(final PDDocument pdf) {
-        List<Collection<AnchorURL>> linkCollections = new ArrayList<>(pdf.getNumberOfPages());
-        for (PDPage page : pdf.getPages()) {
-            final Collection<AnchorURL> pdflinks = new ArrayList<AnchorURL>();
+        final List<Collection<AnchorURL>> linkCollections = new ArrayList<>(pdf.getNumberOfPages());
+        for (final PDPage page : pdf.getPages()) {
+            final Collection<AnchorURL> pdflinks = new ArrayList<>();
             try {
-                List<PDAnnotation> annotations = page.getAnnotations();
+                final List<PDAnnotation> annotations = page.getAnnotations();
                 if (annotations != null) {
-                    for (PDAnnotation pdfannotation : annotations) {
+                    for (final PDAnnotation pdfannotation : annotations) {
                         if (pdfannotation instanceof PDAnnotationLink) {
-                            PDAction link = ((PDAnnotationLink)pdfannotation).getAction();
+                            final PDAction link = ((PDAnnotationLink)pdfannotation).getAction();
                             if (link != null && link instanceof PDActionURI) {
-                                PDActionURI pdflinkuri = (PDActionURI) link;
-                                String uristr = pdflinkuri.getURI();
-                                AnchorURL url = new AnchorURL(uristr);
+                                final PDActionURI pdflinkuri = (PDActionURI) link;
+                                final String uristr = pdflinkuri.getURI();
+                                final AnchorURL url = new AnchorURL(uristr);
                                 pdflinks.add(url);
                             }
                         }
                     }
                 }
-            } catch (IOException ex) {}
+            } catch (final IOException ex) {}
             linkCollections.add(pdflinks);
         }
         return linkCollections;
@@ -285,6 +221,7 @@ public class pdfParser extends AbstractParser implements Parser {
     /**
      * Clean up cache resources allocated by PDFBox that would otherwise not be released.
      */
+    @SuppressWarnings("deprecation")
     public static void clearPdfBoxCaches() {
 		/*
 		 * Prior to pdfbox 2.0.0 font cache occupied > 80MB RAM for a single pdf and
@@ -292,17 +229,17 @@ public class pdfParser extends AbstractParser implements Parser {
 		 * situation is now from far better, but one (unnecessary?) cache structure in
 		 * the COSName class still needs to be explicitely cleared.
 		 */
-    	
+
 		// History of related issues :
     	// http://markmail.org/thread/quk5odee4hbsauhu
-		// https://issues.apache.org/jira/browse/PDFBOX-313 
+		// https://issues.apache.org/jira/browse/PDFBOX-313
 		// https://issues.apache.org/jira/browse/PDFBOX-351
 		// https://issues.apache.org/jira/browse/PDFBOX-441
     	// https://issues.apache.org/jira/browse/PDFBOX-2200
     	// https://issues.apache.org/jira/browse/PDFBOX-2149
-    	
+
         COSName.clearResources();
-        
+
 		/*
 		 * Prior to PDFBox 2.0.0, clearResources() function had to be called on the
 		 * org.apache.pdfbox.pdmodel.font.PDFont class and its children. After version
@@ -327,7 +264,7 @@ public class pdfParser extends AbstractParser implements Parser {
                 // parse
                 final AbstractParser parser = new pdfParser();
                 Document document = null;
-                FileInputStream inStream = null; 
+                FileInputStream inStream = null;
                 try {
                 	inStream = new FileInputStream(pdfFile);
                     document = Document.mergeDocuments(null, "application/pdf", parser.parse(null, "application/pdf", null, new VocabularyScraper(), 0, inStream));
@@ -345,7 +282,7 @@ public class pdfParser extends AbstractParser implements Parser {
                 	if(inStream != null) {
                 		try {
                 			inStream.close();
-                		} catch(IOException e) {
+                		} catch(final IOException e) {
                 			System.err.println("Could not close input stream on file " + pdfFile);
                 		}
                 	}
@@ -359,7 +296,7 @@ public class pdfParser extends AbstractParser implements Parser {
                     System.out.println("\t!!!Parsing without result!!!");
                 } else {
                     System.out.println("\tParsed text with " + document.getTextLength() + " chars of text and " + document.getAnchors().size() + " anchors");
-                    InputStream textStream = document.getTextStream();
+                    final InputStream textStream = document.getTextStream();
                     try {
                         // write file
                         FileUtils.copy(textStream, new File("parsedPdf.txt"));
@@ -372,7 +309,7 @@ public class pdfParser extends AbstractParser implements Parser {
                         		/* textStream can be a FileInputStream : we must close it to ensure releasing system resource */
                         		textStream.close();
                         	}
-						} catch (IOException e) {
+						} catch (final IOException e) {
 							ConcurrentLog.warn("PDFPARSER", "Could not close text input stream");
 						}
                     }

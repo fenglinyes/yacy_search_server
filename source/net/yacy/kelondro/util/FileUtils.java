@@ -45,6 +45,9 @@ import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -53,21 +56,25 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPInputStream;
 
-import net.yacy.cora.document.encoding.UTF8;
-import net.yacy.cora.storage.Files;
-import net.yacy.cora.util.ConcurrentLog;
-
-import org.apache.commons.lang.StringUtils;
-
+import org.apache.commons.lang3.StringUtils;
 import org.mozilla.intl.chardet.nsDetector;
 import org.mozilla.intl.chardet.nsPSMDetector;
+
+import net.yacy.cora.document.encoding.UTF8;
+import net.yacy.cora.util.ConcurrentLog;
 
 public final class FileUtils {
 
     private static final int DEFAULT_BUFFER_SIZE = 1024; // this is also the maximum chunk size
+    /**
+     * Serialize save operations per destination file to avoid concurrent writes
+     * stepping on each other.
+     */
+    private static final ConcurrentHashMap<String, Object> SAVE_MAP_LOCKS = new ConcurrentHashMap<>();
 
     /**
      * Copy a whole InputStream to an OutputStream. Important : it is the responsibility of the caller to close the input and output streams.
@@ -98,7 +105,7 @@ public final class FileUtils {
      * @see #copy(File source, File dest)
      */
     public static long copy(final InputStream source, final OutputStream dest, final long count)
-        throws IOException {
+            throws IOException {
         assert count < 0 || count > 0 : "precondition violated: count == " + count + " (nothing to copy)";
         if ( count == 0 ) {
             // no bytes to copy
@@ -106,15 +113,15 @@ public final class FileUtils {
         }
 
         final byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
-        int chunkSize = (int) ((count > 0) ? Math.min(count, DEFAULT_BUFFER_SIZE) : DEFAULT_BUFFER_SIZE);
+        final int chunkSize = (int) ((count > 0) ? Math.min(count, DEFAULT_BUFFER_SIZE) : DEFAULT_BUFFER_SIZE);
 
         int c;
         long total = 0;
         long remaining;
         if(count > 0) {
-        	remaining = count;
+            remaining = count;
         } else {
-        	remaining = Long.MAX_VALUE;
+            remaining = Long.MAX_VALUE;
         }
         while ( (c = source.read(buffer, 0, remaining < chunkSize ? (int)remaining : chunkSize)) > 0 ) {
             dest.write(buffer, 0, c);
@@ -158,7 +165,7 @@ public final class FileUtils {
      * @throws NullPointerException when a parameter is null
      */
     public static int copy(final InputStream source, final Writer dest, final Charset inputCharset)
-        throws IOException {
+            throws IOException {
         final InputStreamReader reader = new InputStreamReader(source, inputCharset);
         return copy(reader, dest);
     }
@@ -212,8 +219,8 @@ public final class FileUtils {
             // an "sun.io.MalformedInputException: Missing byte-order mark" - exception may occur here
             //Log.logException(e);
             throw new IOException(
-                e == null ? "null" : e.getMessage() == null ? e.toString() : e.getMessage(),
-                e);
+                    e == null ? "null" : e.getMessage() == null ? e.toString() : e.getMessage(),
+                            e);
         }
         return count;
     }
@@ -260,8 +267,8 @@ public final class FileUtils {
                     fos.close();
                 } catch (final Exception e ) {
                     ConcurrentLog.warn(
-                        "FileUtils",
-                        "cannot close FileOutputStream for " + dest + "! " + e.getMessage());
+                            "FileUtils",
+                            "cannot close FileOutputStream for " + dest + "! " + e.getMessage());
                 }
             }
         }
@@ -282,17 +289,17 @@ public final class FileUtils {
      * @see #copy(File source, File dest)
      */
     public static void copyRange(final File source, final OutputStream dest, final int start)
-        throws IOException {
+            throws IOException {
         InputStream fis = null;
         try {
             fis = new FileInputStream(source);
             final long skipped = fis.skip(start);
             if ( skipped != start ) {
                 throw new IllegalStateException("Unable to skip '"
-                    + start
-                    + "' bytes. Only '"
-                    + skipped
-                    + "' bytes skipped.");
+                        + start
+                        + "' bytes. Only '"
+                        + skipped
+                        + "' bytes skipped.");
             }
             copy(fis, dest, -1);
         } finally {
@@ -300,7 +307,7 @@ public final class FileUtils {
                 try {
                     fis.close();
                 } catch (final Exception e ) {
-                	ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + source);
+                    ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + source);
                 }
             }
         }
@@ -328,7 +335,7 @@ public final class FileUtils {
                 try {
                     fis.close();
                 } catch (final Exception e ) {
-                	ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + source);
+                    ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + source);
                 }
             }
         }
@@ -368,17 +375,17 @@ public final class FileUtils {
      * @throws NullPointerException when source parameter is null
      */
     public static byte[] read(final InputStream source) throws IOException {
-    	byte[] content;
-    	try {
-    		content = read(source, -1);
-    	} finally {
-    		/* source input stream must be closed here in all cases */
-    		try {
-    			source.close();
-    		} catch(IOException ignoredException) {
-    		}
-    	}
-    	return content;
+        byte[] content;
+        try {
+            content = read(source, -1);
+        } finally {
+            /* source input stream must be closed here in all cases */
+            try {
+                source.close();
+            } catch(final IOException ignoredException) {
+            }
+        }
+        return content;
     }
 
     /**
@@ -392,7 +399,7 @@ public final class FileUtils {
      */
     public static byte[] read(final InputStream source, final int count) throws IOException {
         if(count == 0) {
-        	return new byte[0];
+            return new byte[0];
         }
         final ByteArrayOutputStream baos = new ByteArrayOutputStream(512);
         copy(source, baos, count);
@@ -414,7 +421,7 @@ public final class FileUtils {
                 try {
                     fis.close();
                 } catch (final Exception e ) {
-                	ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + source);
+                    ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + source);
                 }
             }
             fis = null;
@@ -470,17 +477,17 @@ public final class FileUtils {
         return source;
     }
 
-	/**
-	 * Generate a set of strings matching each line of the given file. Lines are
-	 * lower cased and any eventual surrounding space characters are removed. Empty
-	 * lines and lines starting with the '#' character are ignored.
-	 * 
-	 * @param file
-	 *            a file to load
-	 * @return a set of strings eventually empty
-	 */
+    /**
+     * Generate a set of strings matching each line of the given file. Lines are
+     * lower cased and any eventual surrounding space characters are removed. Empty
+     * lines and lines starting with the '#' character are ignored.
+     *
+     * @param file
+     *            a file to load
+     * @return a set of strings eventually empty
+     */
     public static HashSet<String> loadList(final File file) {
-        final HashSet<String> set = new HashSet<String>();
+        final HashSet<String> set = new HashSet<>();
         BufferedReader br = null;
         try {
             br = new BufferedReader(new InputStreamReader(new FileInputStream(file)));
@@ -497,7 +504,7 @@ public final class FileUtils {
                 try {
                     br.close();
                 } catch (final Exception e ) {
-                	ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + file);
+                    ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + file);
                 }
             }
         }
@@ -516,10 +523,10 @@ public final class FileUtils {
     }
 
     public static ConcurrentHashMap<String, byte[]> loadMapB(final File f) {
-        ConcurrentHashMap<String, String> m = loadMap(f);
+        final ConcurrentHashMap<String, String> m = loadMap(f);
         if (m == null) return null;
-        ConcurrentHashMap<String, byte[]> mb = new ConcurrentHashMap<String, byte[]>();
-        for (Map.Entry<String, String> e: m.entrySet()) mb.put(e.getKey(), UTF8.getBytes(e.getValue()));
+        final ConcurrentHashMap<String, byte[]> mb = new ConcurrentHashMap<>();
+        for (final Map.Entry<String, String> e: m.entrySet()) mb.put(e.getKey(), UTF8.getBytes(e.getValue()));
         return mb;
     }
 
@@ -529,49 +536,63 @@ public final class FileUtils {
     private final static String[] unescaped_strings_out = {"\\", "\n", "="};
 
     public static void saveMap(final File file, final Map<String, String> props, final String comment) {
-    	boolean err = false;
-        PrintWriter pw = null;
-        final File tf = new File(file.toString() + "." + (System.currentTimeMillis() % 1000));
-        try {
-            pw = new PrintWriter(tf, StandardCharsets.UTF_8.name());
-            pw.println("# " + comment);
-            String key, value;
-            for ( final Map.Entry<String, String> entry : props.entrySet() ) {
-                key = entry.getKey();
-                if ( key != null ) {
-                    key = StringUtils.replaceEach(key, unescaped_strings_in, escaped_strings_out);
+        final String lockKey = file.getAbsolutePath();
+        final Object lock = SAVE_MAP_LOCKS.computeIfAbsent(lockKey, k -> new Object());
+        synchronized (lock) {
+            /* Take the snapshot in write order so delayed callers cannot persist stale state. */
+            final Map<String, String> propsCopy = new TreeMap<>(props);
+            File tf = null;
+            PrintWriter pw = null;
+            try {
+                final File parent = file.getAbsoluteFile().getParentFile();
+                if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                    ConcurrentLog.warn("FileUtils", "Could not create parent directory for " + file);
+                    return;
                 }
-                if ( entry.getValue() == null ) {
-                    value = "";
-                } else {
-                    value = entry.getValue();
-                    value = StringUtils.replaceEach(value, unescaped_strings_in, escaped_strings_out);
+                final String baseName = file.getName();
+                final String prefix = (baseName.length() < 3) ? (baseName + "___").substring(0, 3) : baseName;
+                tf = File.createTempFile(prefix, ".tmp", parent);
+
+                pw = new PrintWriter(tf, StandardCharsets.UTF_8.name());
+                pw.println("# " + comment);
+                String key, value;
+                for ( final Map.Entry<String, String> entry : propsCopy.entrySet() ) {
+                    key = entry.getKey();
+                    if ( key != null ) {
+                        key = StringUtils.replaceEach(key, unescaped_strings_in, escaped_strings_out);
+                    }
+                    if ( entry.getValue() == null ) {
+                        value = "";
+                    } else {
+                        value = entry.getValue();
+                        value = StringUtils.replaceEach(value, unescaped_strings_in, escaped_strings_out);
+                    }
+                    pw.println(key + "=" + value);
                 }
-                pw.println(key + "=" + value);
-            }
-            pw.println("# EOF");
-        } catch (final  FileNotFoundException e ) {
-            ConcurrentLog.warn("FileUtils", e.getMessage(), e);
-            err = true;
-        } catch (final  UnsupportedEncodingException e ) {
-            ConcurrentLog.warn("FileUtils", e.getMessage(), e);
-            err = true;
-        } finally {
-            if ( pw != null ) {
+                pw.println("# EOF");
+                pw.flush();
                 pw.close();
+                pw = null;
+
+                forceMove(tf, file);
+            } catch (final FileNotFoundException | UnsupportedEncodingException e ) {
+                ConcurrentLog.warn("FileUtils", "Could not write map to temporary file for " + file + ": " + e.getMessage(), e);
+            } catch (final IOException e) {
+                ConcurrentLog.severe("FileUtils", "Could not persist map to " + file + ": " + e.getMessage(), e);
+            } finally {
+                if (pw != null) {
+                    pw.close();
+                }
+                if (tf != null && tf.exists()) {
+                    FileUtils.deletedelete(tf);
+                }
             }
-            pw = null;
-        }
-        if (!err) try {
-            forceMove(tf, file);
-        } catch (final  IOException e ) {
-            // ignore
         }
     }
-    
+
     public static void saveMapB(final File file, final Map<String, byte[]> props, final String comment) {
-        HashMap<String, String> m = new HashMap<String, String>();
-        for (Map.Entry<String, byte[]> e: props.entrySet()) m.put(e.getKey(), UTF8.String(e.getValue()));
+        final HashMap<String, String> m = new HashMap<>();
+        for (final Map.Entry<String, byte[]> e: props.entrySet()) m.put(e.getKey(), UTF8.String(e.getValue()));
         saveMap(file, m, comment);
     }
 
@@ -582,7 +603,7 @@ public final class FileUtils {
 
     public static ConcurrentHashMap<String, String> table(final Iterator<String> li) {
         String line;
-        final ConcurrentHashMap<String, String> props = new ConcurrentHashMap<String, String>();
+        final ConcurrentHashMap<String, String> props = new ConcurrentHashMap<>();
         while ( li.hasNext() ) {
             int pos = 0;
             line = li.next().trim();
@@ -594,8 +615,8 @@ public final class FileUtils {
                 pos = line.indexOf('=', pos + 1);
             } while ( pos > 0 && line.charAt(pos - 1) == '\\' );
             if ( pos > 0 ) try {
-                String key = StringUtils.replaceEach(line.substring(0, pos).trim(), escaped_strings_in, unescaped_strings_out);
-                String value = StringUtils.replaceEach(line.substring(pos + 1).trim(), escaped_strings_in, unescaped_strings_out);
+                final String key = StringUtils.replaceEach(line.substring(0, pos).trim(), escaped_strings_in, unescaped_strings_out);
+                final String value = StringUtils.replaceEach(line.substring(pos + 1).trim(), escaped_strings_in, unescaped_strings_out);
                 //System.out.println("key = " + key + ", value = " + value);
                 props.put(key, value);
             } catch (final IndexOutOfBoundsException e) {
@@ -606,7 +627,7 @@ public final class FileUtils {
     }
 
     public static Map<String, String> table(final byte[] a) {
-        if (a == null) return new ConcurrentHashMap<String, String>();
+        if (a == null) return new ConcurrentHashMap<>();
         //System.out.println("***TABLE: a.size = " + a.length);
         return table(strings(a));
     }
@@ -627,7 +648,7 @@ public final class FileUtils {
      */
     public static ArrayList<String> getListArray(final File listFile) {
         String line;
-        final ArrayList<String> list = new ArrayList<String>();
+        final ArrayList<String> list = new ArrayList<>();
         BufferedReader br = null;
         try {
             br = new BufferedReader(new InputStreamReader(new FileInputStream(listFile), StandardCharsets.UTF_8));
@@ -642,7 +663,7 @@ public final class FileUtils {
                 try {
                     br.close();
                 } catch (final Exception e ) {
-                	ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + listFile);
+                    ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + listFile);
                 }
             }
         }
@@ -711,7 +732,7 @@ public final class FileUtils {
                 try {
                     br.close();
                 } catch (final Exception e ) {
-                	ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + listFile);
+                    ConcurrentLog.warn("FileUtils", "Could not close input stream on file " + listFile);
                 }
             }
         }
@@ -760,7 +781,7 @@ public final class FileUtils {
      * @return array of file names
      */
     public static List<String> getDirListing(final File dir, final String filter) {
-        final List<String> ret = new LinkedList<String>();
+        final List<String> ret = new LinkedList<>();
         File[] fileList;
         if ( dir != null ) {
             if ( !dir.exists() ) {
@@ -781,39 +802,39 @@ public final class FileUtils {
     public static ArrayList<File> getDirsRecursive(final File dir, final String notdir) {
         return getDirsRecursive(dir, notdir, true);
     }
-    
+
     /**
      * @param sourceDir source directory. Must be not null.
      * @param notdir name of dir to exlcude. Can be null
      * @param fileNameFilter filter to apply on file names. Can be null.
-     * @return list of all files passing fileFilter under sourceDir including sub directories 
+     * @return list of all files passing fileFilter under sourceDir including sub directories
      */
     public static List<File> getFilesRecursive(final File sourceDir, final String notdir, final FilenameFilter fileNameFilter) {
-		List<File> dirList = getDirsRecursive(sourceDir,
-				notdir);
-		dirList.add(sourceDir);
-		List<File> files = new ArrayList<>();
-		for (final File dir : dirList) {
-			Collections.addAll(files, dir.listFiles(fileNameFilter));
-		}
-		return files;
+        final List<File> dirList = getDirsRecursive(sourceDir,
+                notdir);
+        dirList.add(sourceDir);
+        final List<File> files = new ArrayList<>();
+        for (final File dir : dirList) {
+            Collections.addAll(files, dir.listFiles(fileNameFilter));
+        }
+        return files;
     }
 
     /**
      * Returns a List of all dirs and subdirs as File Objects Warning: untested
      */
     private static ArrayList<File> getDirsRecursive(
-        final File dir,
-        final String notdir,
-        final boolean excludeDotfiles) {
+            final File dir,
+            final String notdir,
+            final boolean excludeDotfiles) {
         final File[] dirList = dir.listFiles();
-        final ArrayList<File> resultList = new ArrayList<File>();
+        final ArrayList<File> resultList = new ArrayList<>();
         ArrayList<File> recursive;
         Iterator<File> iter;
         for ( int i = 0; i < dirList.length; i++ ) {
             if ( dirList[i].isDirectory()
-                && (!excludeDotfiles || !dirList[i].getName().startsWith("."))
-                && !dirList[i].getName().equals(notdir) ) {
+                    && (!excludeDotfiles || !dirList[i].getName().startsWith("."))
+                    && !dirList[i].getName().equals(notdir) ) {
                 resultList.add(dirList[i]);
                 recursive = getDirsRecursive(dirList[i], notdir, excludeDotfiles);
                 iter = recursive.iterator();
@@ -894,10 +915,12 @@ public final class FileUtils {
      * @throws IOException
      */
     private static void forceMove(final File from, final File to) throws IOException {
-        if ( !(to.delete() && from.renameTo(to)) ) {
-            // do it manually
-            Files.copy(from, to);
-            FileUtils.deletedelete(from);
+        final Path fromPath = from.toPath();
+        final Path toPath = to.toPath();
+        try {
+            java.nio.file.Files.move(fromPath, toPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (final AtomicMoveNotSupportedException e) {
+            java.nio.file.Files.move(fromPath, toPath, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -927,12 +950,12 @@ public final class FileUtils {
 
         // create the temp file
         final File tempFile =
-            File.createTempFile(
-                parserClassName + "_" + ((idx > -1) ? fileName.substring(0, idx) : fileName),
-                (!fileExt.isEmpty()) ? "." + fileExt : fileExt);
+                File.createTempFile(
+                        parserClassName + "_" + ((idx > -1) ? fileName.substring(0, idx) : fileName),
+                        (!fileExt.isEmpty()) ? "." + fileExt : fileExt);
         return tempFile;
     }
-    
+
     /**
      * delete files and directories if a directory is not empty, delete also everything inside because
      * deletion sometimes fails on windows, there is also a windows exec included
@@ -973,7 +996,7 @@ public final class FileUtils {
                 break;
             }
         }
-        */
+         */
         if ( path.exists() ) {
             path.deleteOnExit();
             String p = "";
@@ -1002,7 +1025,7 @@ public final class FileUtils {
             }
         }
     }
-    
+
     /**
      * Checks if a certain file is in a given directory.
      * @param file the file to check
@@ -1010,9 +1033,9 @@ public final class FileUtils {
      * @return true if file is contained in directory
      */
     public static boolean isInDirectory(final File file, final File directory) {
-        
+
         boolean inDirectory;
-        
+
         try {
             inDirectory = (
                     directory != null
@@ -1024,10 +1047,10 @@ public final class FileUtils {
         } catch (final IOException e) {
             inDirectory = false;
         }
-        
+
         return inDirectory;
     }
-    
+
     /**
      * Auto-detect the charset of content in a stream.
      * Used code from http://jchardet.sourceforge.net/.
@@ -1040,28 +1063,28 @@ public final class FileUtils {
     public static List<String> detectCharset(final InputStream inStream) throws IOException {
         // auto-detect charset, used code from http://jchardet.sourceforge.net/; see also: http://www-archive.mozilla.org/projects/intl/chardet.html
         List<String> result;
-        nsDetector det = new nsDetector(nsPSMDetector.ALL);
-        byte[] buf = new byte[1024] ;
+        final nsDetector det = new nsDetector(nsPSMDetector.ALL);
+        final byte[] buf = new byte[1024] ;
         int len;
         boolean done = false ;
         boolean isAscii = true ;
         while ((len = inStream.read(buf,0,buf.length)) != -1) {
             if (isAscii) {
-            	isAscii = det.isAscii(buf,len);
+                isAscii = det.isAscii(buf,len);
             }
             if (!isAscii && !done) {
-            	done = det.DoIt(buf,len, false);
+                done = det.DoIt(buf,len, false);
             }
         }   det.DataEnd();
         result = new ArrayList<>();
         if (isAscii) {
             result.add(StandardCharsets.US_ASCII.name());
         } else {
-            for (String c: det.getProbableCharsets()) result.add(c); // worst case this returns "nomatch"
+            for (final String c: det.getProbableCharsets()) result.add(c); // worst case this returns "nomatch"
         }
         return result;
     }
-    
+
     /**
      * Because the checking of very large files for their charset may take some time, we do this concurrently in this method
      * This method does not return anything but it logs an info line if the charset is a good choice
@@ -1071,19 +1094,19 @@ public final class FileUtils {
      * @param concurrent if this shall run concurrently
      */
     public static void checkCharset(final File file, final String givenCharset, final boolean concurrent) {
-        Thread t = new Thread("FileUtils.checkCharset") {
+        final Thread t = new Thread("FileUtils.checkCharset") {
             @Override
             public void run() {
-            	try (final FileInputStream fileStream = new FileInputStream(file); 
-            			final BufferedInputStream imp = new BufferedInputStream(fileStream)) { // try-with-resource to close resources
-                    List<String> charsets = FileUtils.detectCharset(imp);
+                try (final FileInputStream fileStream = new FileInputStream(file);
+                        final BufferedInputStream imp = new BufferedInputStream(fileStream)) { // try-with-resource to close resources
+                    final List<String> charsets = FileUtils.detectCharset(imp);
                     if (charsets.contains(givenCharset)) {
                         ConcurrentLog.info("checkCharset", "appropriate charset '" + givenCharset + "' for import of " + file + ", is part one detected " + charsets);
                     } else {
                         ConcurrentLog.warn("checkCharset", "possibly wrong charset '" + givenCharset + "' for import of " + file + ", use one of " + charsets);
                     }
-                } catch (IOException e) {}
-                
+                } catch (final IOException e) {}
+
             }
         };
         if (concurrent) t.start(); else t.run();

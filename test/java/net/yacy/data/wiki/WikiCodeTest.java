@@ -140,25 +140,24 @@ public class WikiCodeTest {
      * Test internal link markup processing
      */
     @Test
-    public void testInternalLink() {
+    public void testRetiredInternalLinkRendersLabelOnly() {
         WikiCode wc = new WikiCode();
-        
-        /* Link to another wiki article */
+
+        /* Internal links no longer target the retired local Wiki application. */
         String result = wc.transform("http://wiki:8080", "[[article]]");
-        assertTrue(result.contains("<a"));
-        assertTrue(result.contains("href=\"Wiki.html?page=article\""));
-        
+        assertFalse(result.contains("<a"));
+        assertTrue(result.contains("article"));
+
         /* Renamed link */
         result = wc.transform("http://wiki:8080", "[[article|renamed article]]");
-        assertTrue(result.contains("<a"));
-        assertTrue(result.contains("href=\"Wiki.html?page=article\""));
-        assertTrue(result.contains(">renamed article<"));
-        
+        assertFalse(result.contains("<a"));
+        assertTrue(result.contains("renamed article"));
+
         /* Multiple links on the same line */
         result = wc.transform("http://wiki:8080", "[[article1]] [[article2]]");
-        assertTrue(result.contains("<a"));
-        assertTrue(result.contains("href=\"Wiki.html?page=article1\""));
-        assertTrue(result.contains("href=\"Wiki.html?page=article2\""));
+        assertFalse(result.contains("<a"));
+        assertTrue(result.contains("article1"));
+        assertTrue(result.contains("article2"));
     }
     
     /**
@@ -169,14 +168,14 @@ public class WikiCodeTest {
         WikiCode wc = new WikiCode();
         
         /* Unamed link */
-        String result = wc.transform("http://wiki:8080", "[http://yacy.net]");
+        String result = wc.transform("http://wiki:8080", "[https://yacy.net]");
         assertTrue(result.contains("<a"));
-        assertTrue(result.contains("href=\"http://yacy.net\""));
+        assertTrue(result.contains("href=\"https://yacy.net\""));
         
         /* Named link */
-        result = wc.transform("http://wiki:8080", "[http://yacy.net YaCy]");
+        result = wc.transform("http://wiki:8080", "[https://yacy.net YaCy]");
         assertTrue(result.contains("<a"));
-        assertTrue(result.contains("href=\"http://yacy.net\""));
+        assertTrue(result.contains("href=\"https://yacy.net\""));
         assertTrue(result.contains(">YaCy<"));
         
         /* Lua Script array parameter : should not crash the transform process */

@@ -1,7 +1,7 @@
 /**
  * svgParser.java 
  * Copyright 2015 by Burkhard Buelte
- * First released 26.09.2015 at http://yacy.net
+ * First released 26.09.2015 at https://yacy.net
  *
  * This library is free software; you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -62,19 +62,21 @@ public class svgParser extends AbstractParser implements Parser {
         this.SUPPORTED_MIME_TYPES.add("image/svg+xml");
     }
 
-    private static final ThreadLocal<SAXParser> tlSax = new ThreadLocal<SAXParser>();
-
-    private static SAXParser getParser() throws SAXException {
-        SAXParser parser = tlSax.get();
-        if (parser == null) {
-            try {
-                parser = SAXParserFactory.newInstance().newSAXParser();
-            } catch (final ParserConfigurationException e) {
-                throw new SAXException(e.getMessage(), e);
-            }
-            tlSax.set(parser);
+    private static final SAXParser PARSER;
+    static {
+        try {
+            SAXParserFactory spf = SAXParserFactory.newInstance();
+            spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            PARSER = spf.newSAXParser();
+        } catch (SAXException | ParserConfigurationException e) {
+            throw new ExceptionInInitializerError(e);
         }
-        return parser;
+    }
+    
+    private static SAXParser getParser() {
+        return PARSER;
     }
 
     @Override

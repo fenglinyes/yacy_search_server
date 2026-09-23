@@ -1,7 +1,7 @@
 /**
  *  Index
  *  Copyright 2005 by Michael Peter Christen; mc@yacy.net, Frankfurt a. M., Germany
- *  First released 26.10.2005 at http://yacy.net
+ *  First released 26.10.2005 at https://yacy.net
  *
  *  $LastChangedDate$
  *  $LastChangedRevision$
@@ -45,7 +45,8 @@ public interface Index extends Iterable<Row.Entry> {
     public byte[] smallestKey();
     public byte[] largestKey();
     public boolean has(byte[] key); // use this only if there is no get in case that has returns true
-    public Map<byte[], Row.Entry> get(final Collection<byte[]> keys, boolean forcecopy) throws IOException, InterruptedException;
+    public Map<byte[], Row.Entry> getMap(final Collection<byte[]> keys, boolean forcecopy) throws IOException, InterruptedException;
+    public List<Row.Entry> getList(final Collection<byte[]> keys, boolean forcecopy) throws IOException, InterruptedException;
     public Row.Entry get(byte[] key, boolean forcecopy) throws IOException;
     public Row.Entry replace(Row.Entry row) throws SpaceExceededException, IOException;
 

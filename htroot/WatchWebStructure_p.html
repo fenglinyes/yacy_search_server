@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <title>YaCy '#[clientname]#': Web Structure</title>
-<link rel="stylesheet" media="screen" type="text/css" href="yacy/ui/css/colorpicker.css" />
+<link rel="stylesheet" media="screen" type="text/css" href="env/styles/colorpicker.css" />
 #%env/templates/metas.template%# 
 <script type="text/javascript" src="js/WatchWebStructure.js"></script>
 <style type="text/css">
@@ -33,7 +33,7 @@
 #%env/templates/header.template%# 
 #%env/templates/submenuWebStructure.template%#
 
-    <script type="text/javascript" src="yacy/ui/js/jquery.colorpicker.js"></script>
+    <script type="text/javascript" src="js/jquery.colorpicker.js"></script>
 	<script type="text/javascript">
       $(document).ready(function(){
         $('#colorback, #colortext, #colorline, #colordot0, #colordota, #colorlineend').ColorPicker({
@@ -57,7 +57,7 @@ The data that is visualized here can also be retrieved in a XML file, which list
 With a GET-property 'about' you get only reference relations about the host that you give in the argument field for 'about'.
 With a GET-property 'latest' you get a list of references that had been computed during the current run-time of YaCy, and with each next call only an update to the next list of references.
 Click the API icon to see the XML file.
-To see a list of all APIs, please visit the <a href="http://www.yacy-websuche.de/wiki/index.php/Dev:API" target="_blank">API wiki page</a>.</span>
+To see a list of all APIs, please visit the <a href="https://wiki.yacy.net/index.php/Dev:API" target="_blank">API wiki page</a>.</span>
 </div>
 
 <h2>Web Structure</h2>

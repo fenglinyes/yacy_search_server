@@ -36,7 +36,6 @@ import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import net.yacy.contentcontrol.ContentControlFilterUpdateThread;
 import net.yacy.cora.date.ISO8601Formatter;
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;
@@ -66,6 +65,7 @@ public final class CrawlStacker implements WorkflowTask<Request>{
 
     public static String ERROR_NO_MATCH_MUST_MATCH_FILTER = "url does not match must-match filter ";
     public static String ERROR_MATCH_WITH_MUST_NOT_MATCH_FILTER = "url matches must-not-match filter ";
+    public static String ERROR_REDIRECT = "Redirect of ";
 
     /** Crawl reject reason prefix having specific processing */
     public static final String CRAWL_REJECT_REASON_DOUBLE_IN_PREFIX = "double in";
@@ -125,6 +125,12 @@ public final class CrawlStacker implements WorkflowTask<Request>{
     public synchronized void close() {
         CrawlStacker.log.info("Shutdown. waiting for remaining " + this.size() + " crawl stacker job entries. please wait.");
         this.requestQueue.shutdown();
+
+        // busy waiting for the queue to empty
+        for (int i = 0; i < 10; i++) {
+        	if (this.size() <= 0) break;
+        	try {Thread.sleep(1000);} catch (final InterruptedException e) {}
+        }
 
         CrawlStacker.log.info("Shutdown. Closing stackCrawl queue.");
 
@@ -322,7 +328,7 @@ public final class CrawlStacker implements WorkflowTask<Request>{
      * @return null if successfull, a reason string if not successful
      */
     public String stackSimpleCrawl(final DigestURL url) {
-        final CrawlProfile pe = this.crawler.defaultSurrogateProfile;
+        final CrawlProfile pe = this.crawler.defaultPackProfile;
         return this.stackCrawl(new Request(
                 this.peers.mySeed().hash.getBytes(),
                 url,
@@ -360,13 +366,13 @@ public final class CrawlStacker implements WorkflowTask<Request>{
         final boolean proxy = (entry.initiator() == null || entry.initiator().length == 0 || ASCII.String(entry.initiator()).equals("------------")) && profile.handle().equals(this.crawler.defaultProxyProfile.handle());
         final boolean remote = profile.handle().equals(this.crawler.defaultRemoteProfile.handle());
         final boolean global =
-            (profile.remoteIndexing()) /* granted */ &&
-            (entry.depth() == profile.depth()) /* leaf node */ &&
-            //(initiatorHash.equals(yacyCore.seedDB.mySeed.hash)) /* not proxy */ &&
-            (
-                    (this.peers.mySeed().isSenior()) ||
-                    (this.peers.mySeed().isPrincipal())
-            ) /* qualified */;
+                (profile.remoteIndexing()) /* granted */ &&
+                (entry.depth() == profile.depth()) /* leaf node */ &&
+                //(initiatorHash.equals(yacyCore.seedDB.mySeed.hash)) /* not proxy */ &&
+                (
+                        (this.peers.mySeed().isSenior()) ||
+                        (this.peers.mySeed().isPrincipal())
+                        ) /* qualified */;
 
         if (!local && !global && !remote && !proxy) {
             error = "URL '" + entry.url().toString() + "' cannot be crawled. initiator = " + ((entry.initiator() == null) ? "" : ASCII.String(entry.initiator())) + ", profile.handle = " + profile.handle();
@@ -389,6 +395,8 @@ public final class CrawlStacker implements WorkflowTask<Request>{
             CrawlStacker.log.info(error);
             return error;
         }
+
+        if (local) this.crawler.recordStartURL(profile, entry);
 
         if (global) {
             // it may be possible that global == true and local == true, so do not check an error case against it
@@ -424,7 +432,7 @@ public final class CrawlStacker implements WorkflowTask<Request>{
         if (dbocc != null) {
             return CRAWL_REJECT_REASON_DOUBLE_IN_PREFIX + ": " + dbocc.name();
         }
-        String urls = url.toNormalform(false);
+        final String urls = url.toNormalform(false);
         final long oldDate = this.indexSegment.getLoadTime(url.hash());
 
         // deny urls that exceed allowed number of occurrences
@@ -441,7 +449,7 @@ public final class CrawlStacker implements WorkflowTask<Request>{
                 if (this.log.isFine()) this.log.fine("URL '" + urlstring + "' appeared too often in result stack, a maximum of " + maxAllowedPagesPerDomain + " is allowed.");
                 return "result stack domain counter exceeded (test by domainCount)";
             }
-            */
+             */
         }
 
         //final Long oldDate = oldEntry == null ? null : oldEntry.date;
@@ -453,7 +461,7 @@ public final class CrawlStacker implements WorkflowTask<Request>{
         if (recrawl) {
             if (CrawlStacker.log.isFine())
                 CrawlStacker.log.fine("RE-CRAWL of URL '" + urlstring + "': this url was crawled " +
-                    ((System.currentTimeMillis() - oldDate) / 60000 / 60 / 24) + " days ago.");
+                        ((System.currentTimeMillis() - oldDate) / 60000 / 60 / 24) + " days ago.");
         } else {
             return CRAWL_REJECT_REASON_DOUBLE_IN_PREFIX + ": local index, recrawl rejected. Document date = "
                     + ISO8601Formatter.FORMATTER.format(new Date(oldDate)) + " is not older than crawl profile recrawl minimum date = "
@@ -483,7 +491,7 @@ public final class CrawlStacker implements WorkflowTask<Request>{
         // check if ip is local ip address
         final String urlRejectReason = this.urlInAcceptedDomain(url);
         if (urlRejectReason != null) {
-            if (CrawlStacker.log.isFine()) CrawlStacker.log.fine("denied_(" + urlRejectReason + ")");
+            if (CrawlStacker.log.isFine()) CrawlStacker.log.fine("URL not in accepted Domain (" + urlRejectReason + ")");
             return "denied_(" + urlRejectReason + ")";
         }
 
@@ -574,26 +582,6 @@ public final class CrawlStacker implements WorkflowTask<Request>{
             }
         }
 
-        if (Switchboard.getSwitchboard().getConfigBool(
-                "contentcontrol.enabled", false) == true) {
-
-            if (!Switchboard.getSwitchboard()
-                    .getConfig("contentcontrol.mandatoryfilterlist", "")
-                    .equals("")) {
-                final FilterEngine f = ContentControlFilterUpdateThread.getNetworkFilter();
-                if (f != null) {
-                    if (!f.isListed(url, null)) {
-
-                        return "the url '"
-                                + url
-                                + "' does not belong to the network mandatory filter list";
-
-                    }
-                }
-            }
-
-        }
-
         final boolean local = url.isLocal();
         if (this.acceptLocalURLs && local) return null;
         if (this.acceptGlobalURLs && !local) return null;
@@ -604,8 +592,8 @@ public final class CrawlStacker implements WorkflowTask<Request>{
         //assert local == yacyURL.isLocalDomain(url.hash()); // TODO: remove the dnsResolve above!
         final InetAddress ia = Domains.dnsResolve(host);
         return (local) ?
-            ("the host '" + host + "' is local, but local addresses are not accepted: " + ((ia == null) ? "DNS lookup resulted in null (unknown host name)" : ia.getHostAddress())) :
-            ("the host '" + host + "' is global, but global addresses are not accepted: " + ((ia == null) ? "null" : ia.getHostAddress()));
+                ("the host '" + host + "' is local, but local addresses are not accepted: " + ((ia == null) ? "DNS lookup resulted in null (unknown host name)" : ia.getHostAddress())) :
+                    ("the host '" + host + "' is global, but global addresses are not accepted: " + ((ia == null) ? "null" : ia.getHostAddress()));
     }
 
     public String urlInAcceptedDomainHash(final byte[] urlhash) {
@@ -617,8 +605,8 @@ public final class CrawlStacker implements WorkflowTask<Request>{
         if (this.acceptLocalURLs && local) return null;
         if (this.acceptGlobalURLs && !local) return null;
         return (local) ?
-            ("the urlhash '" + ASCII.String(urlhash) + "' is local, but local addresses are not accepted") :
-            ("the urlhash '" + ASCII.String(urlhash) + "' is global, but global addresses are not accepted");
+                ("the urlhash '" + ASCII.String(urlhash) + "' is local, but local addresses are not accepted") :
+                    ("the urlhash '" + ASCII.String(urlhash) + "' is global, but global addresses are not accepted");
     }
 
     public boolean acceptLocalURLs() {

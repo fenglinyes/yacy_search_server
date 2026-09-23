@@ -1,7 +1,7 @@
 /**
  *  sitemapParser.java
  *  Copyright 2010 by Michael Peter Christen, mc@yacy.net, Frankfurt am Main, Germany
- *  First released 08.09.2010 at http://yacy.net
+ *  First released 08.09.2010 at https://yacy.net
  *
  * $LastChangedDate$
  * $LastChangedRevision$
@@ -25,6 +25,7 @@
 
 package net.yacy.document.parser;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.MalformedURLException;
@@ -49,8 +50,8 @@ import net.yacy.document.Document;
 import net.yacy.document.Parser;
 import net.yacy.document.TextParser;
 import net.yacy.document.VocabularyScraper;
-import net.yacy.kelondro.io.ByteCountInputStream;
 
+import org.apache.commons.io.IOUtils;
 import org.w3c.dom.CharacterData;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -116,7 +117,8 @@ public class sitemapParser extends AbstractParser implements Parser {
         ConcurrentLog.info("SitemapReader", "loading sitemap from " + sitemapURL.toNormalform(true));
         // client.setHeader(requestHeader.entrySet());
         try (final HTTPClient client = new HTTPClient(agent)) {
-            client.GET(sitemapURL.toNormalform(false), false);
+        	String url = sitemapURL.toNormalform(false);
+            client.GET(url, false);
             if (client.getStatusCode() != 200) {
                 throw new IOException("Unable to download the sitemap file " + sitemapURL +
                         "\nServer returned status: " + client.getHttpResponse().getStatusLine());
@@ -128,11 +130,12 @@ public class sitemapParser extends AbstractParser implements Parser {
             final String contentMimeType = header.mime();
 
             InputStream contentStream = client.getContentstream();
-            if (contentMimeType != null && (contentMimeType.equals("application/x-gzip") || contentMimeType.equals("application/gzip"))) {
+            if ((contentMimeType != null && (contentMimeType.equals("application/x-gzip") || contentMimeType.equals("application/gzip"))) || url.endsWith(".gz")) {
                 contentStream = new GZIPInputStream(contentStream);
             }
-            final ByteCountInputStream counterStream = new ByteCountInputStream(contentStream, null);
-            return new SitemapReader(counterStream, agent);
+            byte[] bytes = IOUtils.toByteArray(contentStream);
+            ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
+            return new SitemapReader(bais, agent);
         } catch (final IOException e) {
             throw e;
         }

@@ -1,7 +1,7 @@
 /**
  *  CollectionConfiguration
  *  Copyright 2011 by Michael Peter Christen
- *  First released 14.04.2011 at http://yacy.net
+ *  First released 14.04.2011 at https://yacy.net
  *
  *  $LastChangedDate: 2011-04-14 22:05:04 +0200 (Do, 14 Apr 2011) $
  *  $LastChangedRevision: 7654 $
@@ -893,7 +893,7 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
         }
 
         if (scraper instanceof DCEntry) {
-            // the document was created with a surrogate parsing; overwrite all md: -entries to Solr
+            // the document was created with a pack parsing; overwrite all md: -entries to Solr
             final DCEntry dcentry = (DCEntry) scraper;
             for (final Map.Entry<String, String[]> entry: dcentry.getMap().entrySet()) {
                 final String tag = entry.getKey();
@@ -1607,7 +1607,7 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
 		                                proccount.incrementAndGet();
 		                                allcount.incrementAndGet();
 		                                if (proccount.get() % 1000 == 0) {
-		                                    postprocessingActivity = "writing cr values to webgraph for host " + hostfinal + "postprocessed " + proccount + " from " + count + " documents; " +
+		                                    postprocessingActivity = "writing CitationRank values to webgraph for host " + hostfinal + "postprocessed " + proccount + " from " + count + " documents; " +
 		                                        (proccount.get() * 1000 / (System.currentTimeMillis() - start)) + " docs/second; " +
 		                                        ((System.currentTimeMillis() - start) * (count - proccount.get()) / proccount.get() / 60000) + " minutes remaining";
 		                                    ConcurrentLog.info("CollectionConfiguration", postprocessingActivity);
@@ -1649,7 +1649,7 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
 		final Map<String, CRV> rankings = new ConcurrentHashMap<>();
         try {
             final int concurrency = Math.min(collection1hosts.size(), Runtime.getRuntime().availableProcessors());
-            postprocessingActivity = "collecting cr for " + collection1hosts.size() + " hosts, concurrency = " + concurrency;
+            postprocessingActivity = "collecting CitationRank for " + collection1hosts.size() + " hosts, concurrency = " + concurrency;
             ConcurrentLog.info("CollectionConfiguration", postprocessingActivity);
             int countcheck = 0;
             for (final String host: collection1hosts.keyList(true)) {

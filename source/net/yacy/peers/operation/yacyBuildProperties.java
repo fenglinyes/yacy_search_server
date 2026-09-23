@@ -1,72 +1,53 @@
 package net.yacy.peers.operation;
 
-import java.util.Locale;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.util.Properties;
 import java.util.regex.Pattern;
 
 
-/**
- * Properties set when compiling this release/version
- */
 public final class yacyBuildProperties {
-	private yacyBuildProperties() {
-	}
 
-	/**
-	 * returns the SVN-Revision Number as a String
-	 */
-	public static String getSVNRevision() {
-		final String revision = "@REPL_REVISION_NR@";
-		if (revision.contains("@") || revision.contains("$")) {
-			return "0";
-		}
-		return revision;
-	}
+    private static Properties props = new Properties();
 
-	/**
-	 * returns the version String (e. g. 0.9)
-	 */
-	public static String getVersion() {
-		if ("@REPL_VERSION@".contains("@") ) {
-			return "0.1";
-		}
-		return "@REPL_VERSION@";
-	}
+    static {
+        try {
+            props.load(new FileInputStream("defaults/yacyBuild.properties"));
+        } catch (final IOException e) {
+            e.printStackTrace();
+            props = null;
+        }
+    }
 
-    public static final Pattern versionMatcher = Pattern.compile("\\A(\\d+\\.\\d{1,3})(\\d{0,5})\\z"); 
-    
-	/**
-	 * returns the long version String (e. g. 0.9106712)
-	 */
-	public static String getLongVersion() {
-		return String.format(Locale.US, "%.3f%05d", Float.valueOf(getVersion()), Integer.valueOf(getSVNRevision()));
-	}
+    public static String getVersion() {
+        return props == null ? "0.1" : props.getProperty("Version", "0.1");
+    }
 
-	/**
-	 * returns the date, when this release was build
-	 */
-	public static String getBuildDate() {
-		if ("@REPL_DATE@".contains("@")) {
-			return "19700101";
-		}
-		return "@REPL_DATE@";
-	}
+    public static String getRepositoryVersionDate() {
+        return props == null ? "20220101" : props.getProperty("RepositoryVersionDate", "20220101");
+    }
 
-	/**
-	 * determines, if this release was compiled and installed
-	 * by a package manager
-	 */
-	public static boolean isPkgManager() {
-		return "@REPL_PKGMANAGER@".equals("true");
-	}
+    public static String getRepositoryVersionTime() {
+        return props == null ? "0000" : props.getProperty("RepositoryVersionTime", "0000");
+    }
 
-	/**
-	 * returns command to use to restart the YaCy daemon,
-	 * when YaCy was installed with a packagemanger
-	 */
-	public static String getRestartCmd() {
-		if ("@REPL_RESTARTCMD@".contains("@")) {
-			return "echo 'error'";
-		}
-		return "@REPL_RESTARTCMD@";
-	}
+    public static String getRepositoryVersionHash() {
+        return props == null ? "0" : props.getProperty("RepositoryVersionHash", "0");
+    }
+
+    public static String getReleaseStub() {
+        return props == null ? "yacy_v0.1_202201010000_000000000" : props.getProperty("ReleaseStub", "yacy_v0.1_202201010000_000000000");
+    }
+
+    public static String getDstamp() {
+        return props == null ? "20220101" : props.getProperty("dstamp", "20220101");
+    }
+
+    public static String getTstamp() {
+        return props == null ? "0000" : props.getProperty("tstamp", "0000");
+    }
+
+    public static final Pattern versionMatcher = Pattern.compile("\\A(\\d+\\.\\d{1,3})(\\d{0,5})\\z");
+
+    public static final Pattern releaseStubVersionMatcher = Pattern.compile("yacy_v(\\d+.\\d{1,3})_(\\d{12})_([0-9a-f]{9})");
 }

@@ -466,11 +466,6 @@ public class MapHeap implements Map<byte[], Map<String, String>> {
         if (this.blob != null) this.blob.close(true);
     }
 
-    @Override
-    public void finalize() {
-        close();
-    }
-
     protected class FullMapIterator extends LookAheadIterator<Map.Entry<byte[], Map<String, String>>> implements Iterator<Map.Entry<byte[], Map<String, String>>> {
         // enumerates Map-Type elements
         // the key is also included in every map that is returned; it's key is 'key'
@@ -491,7 +486,7 @@ public class MapHeap implements Map<byte[], Map<String, String>> {
                 try {
                     map = get(nextKey, false);
                 } catch (final IOException e) {
-                    ConcurrentLog.warn("MapDataMining", e.getMessage());
+                    ConcurrentLog.warn("KELONDRO", "MapDataMining: " + e.getMessage());
                     continue;
                 } catch (final SpaceExceededException e) {
                     ConcurrentLog.logException(e);

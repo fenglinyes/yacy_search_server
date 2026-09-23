@@ -10,10 +10,13 @@
 # INFO    regular action information (i.e. any httpd request URL)
 # CONFIG  regular system status information (i.e. start-up messages)
 # FINE  in-function status debug output
+# FINER  more details in debug output
+# FINEST  even more details in debug output
 BASE64.level = OFF
 PARSER.level = INFO
 PROXY.level = INFO
 YACY.level = INFO
+NETWORK.level = INFO
 HTCACHE.level = INFO
 PLASMA.level = INFO
 SERVER.level = INFO
@@ -22,10 +25,17 @@ CRAWLER.level = INFO
 STACKCRAWL.level = INFO
 MEMORY.level = INFO
 HTTPC.level = INFO
-INDEX-TRANSFER-DISPATCHER.level = INFO
+
+# RWI related
+DHT-OUT.level = INFO
+SWITCHBOARD.level = INFO
+DHT.level = INFO
+KELONDRO.level = INFO
+
 # UPnP related
 UPNP.level = INFO
 sun.net.www.protocol.http.HttpURLConnection.level = INFO
+
 # Tray
 sun.awt.level = OFF
 java.awt.level = OFF
@@ -51,7 +61,7 @@ net.yacy.crawler.robots.RobotsTxt.level = SEVERE
 # Properties for the GuiHandler
 net.yacy.kelondro.logging.GuiHandler.level = ALL
 net.yacy.kelondro.logging.GuiHandler.formatter=net.yacy.kelondro.logging.SimpleLogFormatter
-net.yacy.kelondro.logging.GuiHandler.size = 1000
+net.yacy.kelondro.logging.GuiHandler.size = 100000
 
 # Properties for the ConsoleOutErrHandler
 net.yacy.kelondro.logging.ConsoleOutErrHandler.level = ALL

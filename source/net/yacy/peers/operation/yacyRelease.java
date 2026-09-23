@@ -108,12 +108,6 @@ public final class yacyRelease extends yacyVersion {
         // if false, null is returned
         final Switchboard sb = Switchboard.getSwitchboard();
 
-        // check if release was installed by packagemanager
-        if (yacyBuildProperties.isPkgManager()) {
-            Network.log.info("rulebasedUpdateInfo: package manager is used for update");
-            return null;
-        }
-
         // check if update process allows update retrieve
         final String process = sb.getConfig("update.process", "manual");
         if ((!manual) && (!process.equals("auto"))) {
@@ -239,8 +233,8 @@ public final class yacyRelease extends yacyVersion {
             Thread.currentThread().setName("allReleaseFrom - host " + uri.getHost()); // makes it more easy to see which release blocks process in thread dump
             scraper = Switchboard.getSwitchboard().loader.loadDocument(uri, CacheStrategy.NOCACHE, null, ClientIdentification.yacyInternetCrawlerAgent);
         } catch (final IOException e) {
-        	/* Restore the thread initial name */
-        	Thread.currentThread().setName(initialThreadName);
+            /* Restore the thread initial name */
+            Thread.currentThread().setName(initialThreadName);
             return null;
         }
 
@@ -266,8 +260,8 @@ public final class yacyRelease extends yacyVersion {
         }
         Switchboard.getSwitchboard().setConfig("update.time.lookup", System.currentTimeMillis());
         
-    	/* Restore the thread initial name */
-    	Thread.currentThread().setName(initialThreadName);
+        /* Restore the thread initial name */
+        Thread.currentThread().setName(initialThreadName);
         return new DevAndMainVersions(devReleases, mainReleases);
     }
 
@@ -296,30 +290,26 @@ public final class yacyRelease extends yacyVersion {
         // download signature first, if public key is available
         try {
             if (this.publicKey != null) {
-				final Request request = Switchboard.getSwitchboard().loader
-						.request(new DigestURL(getUrl().toString() + ".sig"), true, false);
-				final Response response = Switchboard.getSwitchboard().loader.load(request, CacheStrategy.NOCACHE,
-						Integer.MAX_VALUE, null, ClientIdentification.yacyInternetCrawlerAgent);
-            	byte[] signatureData = null;
-            	if(response != null && response.validResponseStatus()) {
-            		signatureData = response.getContent();
-            	}
+                final Request request = Switchboard.getSwitchboard().loader.request(new DigestURL(getUrl().toString() + ".sig"), true, false);
+                final Response response = Switchboard.getSwitchboard().loader.load(request, CacheStrategy.NOCACHE, Integer.MAX_VALUE, null, ClientIdentification.yacyInternetCrawlerAgent);
+                byte[] signatureData = null;
+                if (response != null && response.validResponseStatus()) {
+                    signatureData = response.getContent();
+                }
                 if (signatureData == null) {
                     ConcurrentLog.warn("yacyVersion", "download of signature " + getUrl().toString() + " failed. ignoring signature file.");
                 }
                 else signatureBytes = Base64Order.standardCoder.decode(UTF8.String(signatureData).trim());
             }
-            
-			final Request request = Switchboard.getSwitchboard().loader.request(new DigestURL(getUrl().toString()),
-					true, false);
-			final Response response = Switchboard.getSwitchboard().loader.load(request, CacheStrategy.NOCACHE,
-					Integer.MAX_VALUE, null, ClientIdentification.yacyInternetCrawlerAgent);
-			if(response == null) {
-            	throw new IOException("Could not get a response");
-			}
-            if(!response.validResponseStatus()) {
-            	/* HTTP status is not OK : let's stop here to avoid creating a invalid download file*/
-            	throw new IOException("HTTP response status code : " + response.getStatus());
+
+            final Request request = Switchboard.getSwitchboard().loader.request(new DigestURL(getUrl().toString()), true, false);
+            final Response response = Switchboard.getSwitchboard().loader.load(request, CacheStrategy.NOCACHE, Integer.MAX_VALUE, null, ClientIdentification.yacyInternetCrawlerAgent);
+            if (response == null) {
+                throw new IOException("Could not get a response");
+            }
+            if (!response.validResponseStatus()) {
+                /* HTTP status is not OK : let's stop here to avoid creating a invalid download file*/
+                throw new IOException("HTTP response status code : " + response.getStatus());
             }
             final ResponseHeader header = response.getResponseHeader();
 
@@ -332,10 +322,10 @@ public final class yacyRelease extends yacyVersion {
             if (this.publicKey != null && signatureBytes != null) {
                 // copy to file and check signature
                 try (
-                	/* Resources automatically closed by this try-with-resources statement */
-                	final FileOutputStream fileOutStream = new FileOutputStream(download);
-                	final SignatureOutputStream verifyOutput = new SignatureOutputStream(fileOutStream, CryptoLib.signAlgorithm, this.publicKey);
-                	final BufferedOutputStream bufferedStream = new BufferedOutputStream(verifyOutput);
+                    /* Resources automatically closed by this try-with-resources statement */
+                    final FileOutputStream fileOutStream = new FileOutputStream(download);
+                    final SignatureOutputStream verifyOutput = new SignatureOutputStream(fileOutStream, CryptoLib.signAlgorithm, this.publicKey);
+                    final BufferedOutputStream bufferedStream = new BufferedOutputStream(verifyOutput);
                 ) {
                     FileUtils.copy(response.getContent(), bufferedStream);
 
@@ -352,11 +342,11 @@ public final class yacyRelease extends yacyVersion {
             } else {
                 // just copy into file
                 try (
-                	/* Resources automatically closed by this try-with-resources statement */
-                	final FileOutputStream fileOutStream = new FileOutputStream(download);
-                	final BufferedOutputStream downloadOutStream = new BufferedOutputStream(fileOutStream);
+                    /* Resources automatically closed by this try-with-resources statement */
+                    final FileOutputStream fileOutStream = new FileOutputStream(download);
+                    final BufferedOutputStream downloadOutStream = new BufferedOutputStream(fileOutStream);
                 ) {
-                	FileUtils.copy(response.getContent(), downloadOutStream);
+                    FileUtils.copy(response.getContent(), downloadOutStream);
                 }
             }
             if ((!download.exists()) || (download.length() == 0)) throw new IOException("wget of url " + getUrl() + " failed");
@@ -445,22 +435,7 @@ public final class yacyRelease extends yacyVersion {
             }
         }
 
-        if (yacyBuildProperties.isPkgManager()) {
-            // start a re-start daemon
-            try {
-                ConcurrentLog.info("RESTART", "INITIATED");
-                final String script =
-                    "#!/bin/sh" + serverCore.LF_STRING +
-                    yacyBuildProperties.getRestartCmd() + " >/var/lib/yacy/RELEASE/log" + serverCore.LF_STRING;
-                final File scriptFile = new File(sb.getDataPath(), "DATA/RELEASE/restart.sh");
-                OS.deployScript(scriptFile, script);
-                ConcurrentLog.info("RESTART", "wrote restart-script to " + scriptFile.getAbsolutePath());
-                OS.execAsynchronous(scriptFile);
-                ConcurrentLog.info("RESTART", "script is running");
-            } catch (final IOException e) {
-                ConcurrentLog.severe("RESTART", "restart failed", e);
-            }
-        } else if (OS.canExecUnix) {
+        if (OS.canExecUnix) {
             // start a re-start daemon
             try {
                 ConcurrentLog.info("RESTART", "INITIATED");
@@ -491,10 +466,7 @@ public final class yacyRelease extends yacyVersion {
      * @return true when release file has been successfully extracted and asynchronous update has been triggered
      */
     public static boolean deployRelease(final File releaseFile) {
-    	boolean restartTriggered = false;
-        if (yacyBuildProperties.isPkgManager()) {
-            return restartTriggered;
-        }
+        boolean restartTriggered = false;
         try {
             final Switchboard sb = Switchboard.getSwitchboard();
             ConcurrentLog.info("UPDATE", "INITIATED");

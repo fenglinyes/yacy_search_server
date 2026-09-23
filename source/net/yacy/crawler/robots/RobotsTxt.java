@@ -35,8 +35,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -67,16 +65,13 @@ public class RobotsTxt {
     protected static final String ROBOTS_DB_PATH_SEPARATOR = ";";
     protected static final Pattern ROBOTS_DB_PATH_SEPARATOR_MATCHER = Pattern.compile(ROBOTS_DB_PATH_SEPARATOR);
 
-    private final ConcurrentMap<String, DomSync> syncObjects;
+    /** Fixed lock stripes bound memory use; colliding hosts serialize robots.txt fetches. */
+    private final Object[] syncObjects = new Object[256];
     //private static final HashSet<String> loadedRobots = new HashSet<String>(); // only for debugging
     private final WorkTables tables;
     private final LoaderDispatcher loader;
     /** Thread pool used to launch concurrent tasks */
     private final ThreadPoolExecutor threadPool;
-
-    private static class DomSync {
-        private DomSync() {}
-    }
 
     /**
      *
@@ -87,9 +82,11 @@ public class RobotsTxt {
     public RobotsTxt(final WorkTables worktables, LoaderDispatcher loader, final int maxActiveTheads) {
         this.threadPool = new ThreadPoolExecutor(maxActiveTheads, maxActiveTheads,
                 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<Runnable>(),
+                new LinkedBlockingQueue<>(),
                 new NamePrefixThreadFactory(RobotsTxt.class.getSimpleName()));
-        this.syncObjects = new ConcurrentHashMap<>();
+        for (int i = 0; i < this.syncObjects.length; i++) {
+            this.syncObjects[i] = new Object();
+        }
         this.tables = worktables;
         this.loader = loader;
         try {
@@ -106,7 +103,11 @@ public class RobotsTxt {
     public void clear() throws IOException {
         log.info("clearing robots table");
         this.tables.getHeap(WorkTables.TABLE_ROBOTS_NAME).clear();
-        this.syncObjects.clear();
+    }
+
+    /** Both loading paths must use the same stable lock for a host and port. */
+    private Object lockForHost(final String hostPort) {
+        return this.syncObjects[hostPort.hashCode() & (this.syncObjects.length - 1)];
     }
 
     public void close() {
@@ -153,15 +154,7 @@ public class RobotsTxt {
              System.currentTimeMillis() - robotsTxt4Host.getLoadedDate().getTime() > 7*24*60*60*1000 */
            )) {
 
-            // make or get a synchronization object
-            DomSync syncObj = this.syncObjects.get(urlHostPort);
-            if (syncObj == null) {
-                syncObj = new DomSync();
-                this.syncObjects.put(urlHostPort, syncObj);
-            }
-
-            // we can now synchronize for each host separately
-            synchronized (syncObj) {
+            synchronized (lockForHost(urlHostPort)) {
                 // if we have not found any data or the data is older than 7 days, we need to load it from the remote server
                 // check the robots table again for all threads that come here because they waited for another one
                 // to complete a download
@@ -199,7 +192,7 @@ public class RobotsTxt {
                 if (response == null) {
                     this.processOldEntry(robotsTxt4Host, robotsURL, robotsTable);
                 } else {
-                    robotsTxt4Host = this.processNewEntry(robotsURL, response, agent.robotIDs);
+                    robotsTxt4Host = this.processNewEntry(robotsURL, response, agent.robotIDs());
                 }
             }
         }
@@ -225,6 +218,7 @@ public class RobotsTxt {
     }
 
     public void ensureExist(final MultiProtocolURL theURL, final ClientIdentification.Agent agent, boolean concurrent) {
+        if (!agent.isRobot()) return;
         if (theURL.isLocal()) return;
         final String urlHostPort = getHostPort(theURL);
         if (urlHostPort == null) return;
@@ -239,14 +233,7 @@ public class RobotsTxt {
         final Thread t = new Thread("Robots.txt:ensureExist(" + theURL.toNormalform(true) + ")") {
             @Override
             public void run(){
-                // make or get a synchronization object
-                DomSync syncObj = RobotsTxt.this.syncObjects.get(urlHostPort);
-                if (syncObj == null) {
-                    syncObj = new DomSync();
-                    RobotsTxt.this.syncObjects.put(urlHostPort, syncObj);
-                }
-                // we can now synchronize for each host separately
-                synchronized (syncObj) {
+                synchronized (RobotsTxt.this.lockForHost(urlHostPort)) {
                     if (robotsTable.containsKey(robotsTable.encodedKey(urlHostPort))) return;
 
                     // generating the proper url to download the robots txt
@@ -266,7 +253,7 @@ public class RobotsTxt {
                     if (response == null) {
                         RobotsTxt.this.processOldEntry(null, robotsURL, robotsTable);
                     } else {
-                        RobotsTxt.this.processNewEntry(robotsURL, response, agent.robotIDs);
+                        RobotsTxt.this.processNewEntry(robotsURL, response, agent.robotIDs());
                     }
                 }
             }
@@ -292,8 +279,8 @@ public class RobotsTxt {
             // generate artificial entry
             robotsTxt4Host = new RobotsTxtEntry(
                     robotsURL,
-                    new ArrayList<String>(),
-                    new ArrayList<String>(),
+                    new ArrayList<>(),
+                    new ArrayList<>(),
                     new Date(),
                     new Date(),
                     null,

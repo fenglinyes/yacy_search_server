@@ -3,7 +3,7 @@
  *  SPDX-FileCopyrightText: 2010 Michael Peter Christen <mc@yacy.net)> 
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *  Frankfurt a. M., Germany
- *  First released 27.8.2010 at http://yacy.net
+ *  First released 27.8.2010 at https://yacy.net
  *
  * $LastChangedDate$
  * $LastChangedRevision$
@@ -35,7 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;

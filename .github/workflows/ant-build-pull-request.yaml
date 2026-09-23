@@ -1,0 +1,21 @@
+name: CI Script to build after pull request
+
+on: pull_request
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.repository == 'yacy/yacy_search_server'
+    steps:
+    - uses: actions/checkout@master
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+    - name: Build with ant
+      run: ant clean all dist
+    - name: Verify Solr and Jetty dependency isolation
+      run: ./test/jetty-solr-dependency-guard.sh
+    - name: Test embedded Solr bridge
+      run: ./test/solr9-jetty-bridge-spike.sh

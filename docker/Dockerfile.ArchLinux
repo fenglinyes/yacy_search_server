@@ -1,0 +1,73 @@
+# Arch Linux Docker image for YaCy
+
+# build with
+# docker build -t yacy/yacy_search_server:archlinux -f Dockerfile.ArchLinux ../
+
+# run with
+# docker run -d --name yacy -p 8090:8090 -p 8443:8443 -v yacy_data:/opt/yacy_search_server/DATA --log-opt max-size=200m --log-opt max-file=2 yacy/yacy_search_server:archlinux
+
+
+FROM archlinux:latest
+
+# update the system and clean up
+RUN pacman -Syu --noconfirm && pacman -Scc --noconfirm
+RUN pacman -Sy java-runtime-common wget --noconfirm && pacman -Scc --noconfirm
+
+# download latest version of graalvm and move it to /lib/jvm/java-{javaversion}-graalvm
+RUN bash <(curl -sL https://get.graalvm.org/jdk) --no-progress && \
+JAVAVERSION=$(ls ./ | grep graalvm | cut -d'-' -f3 | sed 's/java//g') && \
+mv ./graalvm-ce-java$JAVAVERSION-$(ls ./ | grep graalvm | cut -d'-' -f4) /lib/jvm/java-$JAVAVERSION-graalvm && \
+archlinux-java set java-$JAVAVERSION-graalvm
+
+# update the path variable
+ENV PATH="/usr/lib/jvm/default/bin:${PATH}"
+
+# set the JAVA_HOME variable
+ENV JAVA_HOME="/usr/lib/jvm/default"
+WORKDIR /opt
+RUN curl "https://downloads.apache.org/ant/source/apache-ant-1.10.13-src.tar.gz" --output ant-src.tar.gz && \
+tar -xzf ant-src.tar.gz && \
+rm ant-src.tar.gz && \
+mv apache-ant-* ant-src && \
+cd ant-src && \
+wget -O fetch.xml "https://raw.githubusercontent.com/apache/ant/541a1d2448af3e95134f79a970a608403deab00a/fetch.xml" && \
+wget -O lib/libraries.properties "https://raw.githubusercontent.com/apache/ant/541a1d2448af3e95134f79a970a608403deab00a/lib/libraries.properties" && \
+mkdir /opt/ant && \
+sh build.sh -f fetch.xml -Ddest=optional && \
+sh build.sh -Ddist.dir=/opt/ant dist && \
+cd .. && \
+rm -rf ant-src
+
+# set the ANT_HOME variable
+ENV ANT_HOME="/opt/ant"
+
+# set the PATH variable
+ENV PATH="/opt/ant/bin:${PATH}"
+RUN ant -f /opt/ant/fetch.xml -Ddest=system
+
+WORKDIR /opt
+
+# download the latest version of yacy
+RUN curl "https://codeload.github.com/yacy/yacy_search_server/zip/refs/heads/master" --output yacy.zip && \
+pacman -S unzip --noconfirm && \
+pacman -Scc --noconfirm && \
+unzip yacy.zip && \
+rm yacy.zip && \
+mv yacy_search_server-master yacy && \
+cd yacy && \
+ant compile -f build.xml && \
+rm -rf /opt/yacy/.github
+
+# Set initial admin password: "yacy" (encoded with custom yacy md5 function net.yacy.cora.order.Digest.encodeMD5Hex())
+RUN sed -i "/adminAccountBase64MD5=/c\adminAccountBase64MD5=MD5:8cffbc0d66567a0987a4aba1ec46d63c" /opt/yacy/defaults/yacy.init && \
+    sed -i "/adminAccountForLocalhost=/c\adminAccountForLocalhost=false" /opt/yacy/defaults/yacy.init && \
+    sed -i "/server.https=false/c\server.https=true" /opt/yacy/defaults/yacy.init
+
+# add the yacy user
+RUN useradd --no-create-home --system yacy && \
+usermod -L yacy && \
+chown -R yacy:yacy /opt/yacy
+EXPOSE 8090 8443
+VOLUME ["/opt/yacy/DATA"]
+USER yacy
+CMD ["/bin/sh","/opt/yacy/startYACY.sh","-f"]

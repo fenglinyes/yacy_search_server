@@ -1,6 +1,10 @@
 package net.yacy.document.parser;
 
 import static net.yacy.document.parser.htmlParser.parseToScraper;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -17,15 +21,15 @@ import java.util.Set;
 
 import org.junit.Test;
 
-import junit.framework.TestCase;
 import net.yacy.cora.document.id.AnchorURL;
 import net.yacy.document.Document;
 import net.yacy.document.Parser;
 import net.yacy.document.VocabularyScraper;
 import net.yacy.document.parser.html.ContentScraper;
 import net.yacy.document.parser.html.ImageEntry;
+import net.yacy.document.parser.html.TagValency;
 
-public class htmlParserTest extends TestCase {
+public class htmlParserTest {
 
         @Test
 	public void testGetRealCharsetEncoding() {
@@ -221,7 +225,7 @@ public class htmlParserTest extends TestCase {
 				testHtml.toString().getBytes(StandardCharsets.UTF_8));) {
 			final Set<String> ignore = new HashSet<>();
 			ignore.add("optional");
-			final Document[] docs = parser.parse(url, mimetype, null, ignore, new VocabularyScraper(), 0, sourceStream);
+			final Document[] docs = parser.parse(url, mimetype, null, TagValency.EVAL, ignore, new VocabularyScraper(), 0, sourceStream);
 			final Document doc = docs[0];
 			final String parsedDext = doc.getTextString();
 			
@@ -266,7 +270,7 @@ public class htmlParserTest extends TestCase {
 
             try (final FileInputStream inStream = new FileInputStream(file);) {
             	
-                final Document[] docs = parser.parseWithLimits(url, mimetype, null, new VocabularyScraper(), 0, inStream, 1000, 10000);
+                final Document[] docs = parser.parseWithLimits(url, mimetype, null, new VocabularyScraper(), 0, inStream, 1000, 10000, null);
                 final Document doc = docs[0];
                 assertNotNull("Parser result must not be null for file " + fileName, docs);
                 final String parsedText = doc.getTextString();
@@ -304,7 +308,7 @@ public class htmlParserTest extends TestCase {
 			try (InputStream sourceStream = new ByteArrayInputStream(
 					testHtml.toString().getBytes(StandardCharsets.UTF_8));) {
 				final Document[] docs = parser.parseWithLimits(url, mimetype, charset, new VocabularyScraper(), 0,
-						sourceStream, maxLinks, Long.MAX_VALUE);
+						sourceStream, maxLinks, Long.MAX_VALUE, null);
 				final Document doc = docs[0];
 				assertEquals(maxLinks, doc.getAnchors().size());
 				assertEquals("The parsed document should be marked as partially parsed only when the limit is exceeded",
@@ -343,7 +347,7 @@ public class htmlParserTest extends TestCase {
 			try (InputStream sourceStream = new ByteArrayInputStream(
 					testHtml.toString().getBytes(StandardCharsets.UTF_8));) {
 				final Document[] docs = parser.parseWithLimits(url, mimetype, charset, new VocabularyScraper(), 0,
-						sourceStream, maxLinks, Long.MAX_VALUE);
+						sourceStream, maxLinks, Long.MAX_VALUE, null);
 				final Document doc = docs[0];
 				assertEquals(maxLinks, doc.getRSS().size());
 				assertEquals("The parsed document should be marked as partially parsed only when the limit is exceeded",
@@ -368,7 +372,7 @@ public class htmlParserTest extends TestCase {
                 + "<figure><img width=\"550px\" title=\"image as exemple\" alt=\"image as exemple\" src=\"./img/my_image.png\"></figrue>" // + img width 550 (+html5 figure)
                 + "</body></html>";
 
-        ContentScraper scraper = parseToScraper(url, charset, new HashSet<String>(), new VocabularyScraper(), 0, testhtml, 10, 10);
+        ContentScraper scraper = parseToScraper(url, charset, TagValency.IGNORE, new HashSet<String>(), new VocabularyScraper(), 0, testhtml, 10, 10);
         List<AnchorURL> anchorlist = scraper.getAnchors();
 
         String linktxt = anchorlist.get(0).getTextProperty();
@@ -410,7 +414,7 @@ public class htmlParserTest extends TestCase {
         }
         testHtml.append("</p></body></html>");
         
-        ContentScraper scraper = parseToScraper(url, charset, new HashSet<String>(), new VocabularyScraper(), 0, testHtml.toString(), Integer.MAX_VALUE, Integer.MAX_VALUE);
+        ContentScraper scraper = parseToScraper(url, charset, TagValency.IGNORE, new HashSet<String>(), new VocabularyScraper(), 0, testHtml.toString(), Integer.MAX_VALUE, Integer.MAX_VALUE);
         assertEquals(nestingDepth, scraper.getAnchors().size());
         assertEquals(1, scraper.getImages().size());
 
@@ -431,11 +435,11 @@ public class htmlParserTest extends TestCase {
                 + "<p>" + textSource + "</p>"
                 + "</body></html>";
 
-        ContentScraper scraper = parseToScraper(url, charset, new HashSet<String>(), new VocabularyScraper(), 0, testhtml, 10, 10);
+        ContentScraper scraper = parseToScraper(url, charset, TagValency.IGNORE, new HashSet<String>(), new VocabularyScraper(), 0, testhtml, 10, 10);
 
         String txt = scraper.getText();
         System.out.println("ScraperTagTest: [" + textSource + "] = [" + txt + "]");
-        assertEquals(txt, textSource);
+        assertEquals(txt, textSource + ".");
     }
 
     /**
@@ -460,10 +464,88 @@ public class htmlParserTest extends TestCase {
                 + "</head>\n"
                 + "<body>" + textSource + "</body>\n"
                 + "</html>";
-        ContentScraper scraper = parseToScraper(url, charset, new HashSet<String>(), new VocabularyScraper(), 0, testhtml, 10, 10);
+        ContentScraper scraper = parseToScraper(url, charset, TagValency.IGNORE, new HashSet<String>(), new VocabularyScraper(), 0, testhtml, 10, 10);
 
         String txt = scraper.getText();
         System.out.println("ScraperScriptTagTest: [" + textSource + "] = [" + txt + "]");
         assertEquals(txt, textSource);
+    }
+
+    /**
+     * Test for parseToScraper of class htmlParser with quoted attribute content
+     * containing ">" characters (for example Alpine.js x-data arrow functions).
+     * Attribute values must never leak as plain text.
+     */
+    @Test
+    public void testParseToScraper_QuotedAttributeWithGt() throws MalformedURLException, IOException {
+        final AnchorURL url = new AnchorURL("http://localhost/");
+        final String charset = StandardCharsets.UTF_8.name();
+        final String textSource = "Visible text";
+        final String testhtml = "<html><body>"
+                + "<div class=\"relative flex items-start justify-between fluid-container-full\""
+                + " x-data=\"{"
+                + "mainMenuOpen: false,"
+                + "isDesktop: false,"
+                + "mobileMainNavHeight: 384,"
+                + "init() {"
+                + "this.checkIsDesktop();"
+                + "},"
+                + "checkIsDesktop() {"
+                + "this.isDesktop = window.matchMedia('screen and (min-width:1024px)').matches;"
+                + "},"
+                + "closeMainMenu() {"
+                + "this.mainMenuOpen = false;"
+                + "},"
+                + "openMainMenu() {"
+                + "this.mainMenuOpen = true;"
+                + "},"
+                + "onSubMenuIntersect(el) {"
+                + "this.$nextTick(() => {"
+                + "this.mobileMainNavHeight = el.getBoundingClientRect().height;"
+                + "});"
+                + "}"
+                + "}\">"
+                + "<p>" + textSource + "</p>"
+                + "</div>"
+                + "</body></html>";
+
+        final ContentScraper scraper = parseToScraper(url, charset, TagValency.IGNORE, new HashSet<String>(),
+                new VocabularyScraper(), 0, testhtml, 10, 10);
+
+        final String txt = scraper.getText();
+        assertEquals(textSource + ".", txt);
+        assertFalse(txt.contains("getBoundingClientRect"));
+        assertFalse(txt.contains("mobileMainNavHeight"));
+    }
+
+    /**
+     * Test for parseToScraper of class htmlParser with quoted attribute content
+     * containing a comparison using ">" and additional Alpine-style attributes.
+     * Attribute names/values must never leak as plain text.
+     */
+    @Test
+    public void testParseToScraper_QuotedAttributeComparisonGt() throws MalformedURLException, IOException {
+        final AnchorURL url = new AnchorURL("http://localhost/");
+        final String charset = StandardCharsets.UTF_8.name();
+        final String textSource = "Next image";
+        final String testhtml = "<html><body>"
+                + "<button "
+                + "type=\"button\" "
+                + "class=\"splide__arrow splide__arrow--prev absolute left-1 top-1/2 z-10 -translate-y-1/2 lg:left-2.5 [@media(pointer:coarse)]:hidden\" "
+                + "x-show=\"imgModalItems.length > 1\" "
+                + "@click=\"lightboxPrev()\""
+                + ">"
+                + textSource
+                + "</button>"
+                + "</body></html>";
+
+        final ContentScraper scraper = parseToScraper(url, charset, TagValency.IGNORE, new HashSet<String>(),
+                new VocabularyScraper(), 0, testhtml, 10, 10);
+
+        final String txt = scraper.getText();
+        assertTrue(txt.contains(textSource));
+        assertFalse(txt.contains("@click"));
+        assertFalse(txt.contains("lightboxPrev"));
+        assertFalse(txt.contains("imgModalItems.length"));
     }
 }

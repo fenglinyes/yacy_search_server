@@ -117,7 +117,7 @@ public class Dispatcher implements WorkflowTask<Transmission.Chunk> {
         this.transmissionBuffer = new ConcurrentHashMap<String, Transmission.Chunk>();
         this.segment = env.index;
         this.seeds = env.peers;
-        this.log = new ConcurrentLog("INDEX-TRANSFER-DISPATCHER");
+        this.log = new ConcurrentLog("DHT-OUT");
 		this.transmission = new Transmission(env, this.log, gzipBody, timeout);
 
         final int concurrentSender = Math.min(8, WorkflowProcessor.availableCPU);
@@ -281,7 +281,7 @@ public class Dispatcher implements WorkflowTask<Transmission.Chunk> {
             for (Seed target: targets[vertical]) {
                 Transmission.Chunk entry = this.transmissionBuffer.get(target.hash); // if this is not null, the entry is extended here
                 if (entry == null) entry =  transmission.newChunk(target); else {
-                    log.info("extending chunk for peer " + entry.dhtTarget().hash + " containing " + entry.containersSize() + " references with " + verticalContainer.size() + " more entries");
+                    log.fine("extending chunk for peer " + entry.dhtTarget().hash + " containing " + entry.containersSize() + " references with " + verticalContainer.size() + " more entries");
                 }
                 try {
                     entry.add(verticalContainer);

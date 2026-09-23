@@ -2,7 +2,7 @@
  * RecrawlBusyThread.java
  * SPDX-FileCopyrightText: 2015 by Burkhard Buelte
  * SPDX-License-Identifier: GPL-2.0-or-later
- * First released 15.05.2015 at http://yacy.net
+ * First released 15.05.2015 at https://yacy.net
  *
  * This is a part of YaCy, a peer-to-peer based web search engine
  *
@@ -43,6 +43,7 @@ import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.crawler.data.CrawlProfile;
 import net.yacy.crawler.data.NoticedURL;
 import net.yacy.crawler.retrieval.Request;
+import net.yacy.document.parser.html.TagValency;
 import net.yacy.kelondro.workflow.AbstractBusyThread;
 import net.yacy.search.Switchboard;
 import net.yacy.search.schema.CollectionSchema;
@@ -351,11 +352,13 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 CrawlProfile.MATCH_NEVER_STRING, // indexUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // indexContentMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // indexContentMustNotMatch
+                false, //noindexWhenCanonicalUnequalURL
                 0, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
                 true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
-                true, true, true, false, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
+                true, true, true, false, CacheStrategy.IFFRESH,
                 "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
-                ClientIdentification.yacyInternetCrawlerAgentName, null, null, 0);
+                ClientIdentification.yacyInternetCrawlerAgentName,
+                TagValency.EVAL, null, null, 0);
         return profile;
     }
 

@@ -16,7 +16,8 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
 
     private double releaseNr;
     private final String dateStamp;
-    private int svn;
+    private long svn;
+    private String git;
     private final boolean mainRelease;
 
     private final String name;
@@ -27,6 +28,7 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
      *  <ul>
      *  <li>yacy_dev_v${releaseVersion}_${DSTAMP}_${releaseNr}.tar.gz</li>
      *  <li>yacy_v${releaseVersion}_${DSTAMP}_${releaseNr}.tar.gz</li>
+     *  <li>yacy_v1.926_202212010112_d6731e3e3.tar.gz</li>
      *  </ul>
      *  i.e. yacy_v0.51_20070321_3501.tar.gz
      * @param release
@@ -58,17 +60,22 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
         this.mainRelease = ((int) (getReleaseNr() * 100)) % 10 == 0 || (host != null && host.endsWith("yacy.net"));
         //System.out.println("Release version " + this.releaseNr + " is " + ((this.mainRelease) ? "main" : "std"));
         this.dateStamp = comp[1];
-        if (getDateStamp().length() != 8) {
-            throw new RuntimeException("release file name '" + release + "' is not valid, '" + comp[1] + "' should be a 8-digit date string");
+        if (this.dateStamp.length() != 8 && this.dateStamp.length() != 12) {
+            throw new RuntimeException("release file name '" + release + "' is not valid, '" + comp[1] + "' should be a 8 or 12-digit date string");
         }
         if (comp.length > 2) {
             try {
-                this.svn = Integer.parseInt(comp[2]);
+                this.svn = Long.parseLong(comp[2]);
+                this.git = "";
             } catch (final NumberFormatException e) {
-                throw new RuntimeException("release file name '" + release + "' is not valid, '" + comp[2] + "' should be a integer number");
+                // this is not a number, so it is a new release name using an git version hash
+                // to have an easy way to compare versions constructed that way, we make a fake svn number using the date
+                this.svn = Long.parseLong(this.dateStamp);
+                this.git = comp[2];
             }
         } else {
-            this.svn = 0; // we migrate to git
+            this.svn = 0L; // we migrate to git
+            this.git = "";
         }
         // finished! we parsed a relase string
     }
@@ -79,11 +86,7 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
         if (thisVersion == null) {
             final Switchboard sb = Switchboard.getSwitchboard();
             if (sb == null) return null;
-            thisVersion = new yacyVersion(
-                "yacy" +
-                "_v" + yacyBuildProperties.getVersion() + "_" +
-                yacyBuildProperties.getBuildDate() + "_" +
-                yacyBuildProperties.getSVNRevision() + ".tar.gz", null);
+            thisVersion = new yacyVersion(yacyBuildProperties.getReleaseStub() + ".tar.gz", null);
         }
         return thisVersion;
     }
@@ -108,7 +111,7 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
         if (r != 0) return r;
         r = v0.getDateStamp().compareTo(v1.getDateStamp());
         if (r != 0) return r;
-        return (Integer.valueOf(v0.getSvn())).compareTo(Integer.valueOf(v1.getSvn()));
+        return (Long.valueOf(v0.getSvn())).compareTo(Long.valueOf(v1.getSvn()));
     }
 
     @Override
@@ -126,29 +129,36 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
     }
 
     /**
-     * Converts combined version-string to a pretty string, e.g. "0.435/01818" or "dev/01818" (development version) or "dev/00000" (in case of wrong input)
+     * Converts combined version-string to a pretty string, e.g. "1.926/3230df6e2", "0.435/01818" or "dev/01818" (development version) or "dev/00000" (in case of wrong input)
      *
-     * @param ver Combined version string matching regular expression:  "\A(\d+\.\d{3})(\d{4}|\d{5})\z" <br>
-     *  (i.e.: start of input, 1 or more digits in front of decimal point, decimal point followed by 3 digits as major version, 4 or 5 digits for SVN-Version, end of input)
-     * @return If the major version is &lt; 0.11  - major version is separated from SVN-version by '/', e.g. "0.435/01818" <br>
-     *         If the major version is &gt;= 0.11 - major version is replaced by "dev" and separated SVN-version by '/', e.g."dev/01818" <br>
-     *         "dev/00000" - If the input does not matcht the regular expression above
+     * @param combinedVersion Combined version string matching regular expression: "yacy_v(\d+.\d{1,3})_(\d{12})_([0-9a-f]{9})" or "\A(\d+\.\d{1,3})(\d{0,5})\z"
+     * @return If the combined version matches a release stub - "1.926/3230df6e2" <br>
+     *         If the major version is &lt; 0.11  - major version is replaced by "dev" and separated SVN-version by '/', e.g."dev/01818" <br>
+     *         If the major version is &gt;= 0.11 - major version is separated from SVN-version by '/', e.g. "0.435/01818" <br>
+     *         "dev/00000" - If the input does not match either regular expression above
      */
-    public static String[] combined2prettyVersion(final String ver) {
-         return combined2prettyVersion(ver, "");
-     }
+    public static String[] combined2prettyVersion(final String combinedVersion) {
+        return combined2prettyVersion(combinedVersion, "");
+    }
 
     public static String[] combined2prettyVersion(final String ver, final String computerName) {
         final Matcher matcher = yacyBuildProperties.versionMatcher.matcher(ver);
-         if (!matcher.find()) {
-             ConcurrentLog.warn("STARTUP", "Peer '"+computerName+"': wrong format of version-string: '" + ver + "'. Using default string 'dev/00000' instead");
-             return new String[]{"dev", "0000"};
-         }
+        final Matcher releaseStubMatcher = yacyBuildProperties.releaseStubVersionMatcher.matcher(ver);
 
-         final String mainversion = (Double.parseDouble(matcher.group(1)) < 0.11 ? "dev" : matcher.group(1));
-        String revision = matcher.group(2);
-        for(int i=revision.length();i<4;++i) revision += "0";
-        return new String[]{mainversion, revision};
+        String mainVersion = "dev";
+        String revision = "00000";
+
+        if (matcher.find()) {
+            mainVersion = (Double.parseDouble(matcher.group(1)) < 0.11 ? "dev" : matcher.group(1));
+            revision = matcher.group(2);
+        } else if (releaseStubMatcher.find()){
+            mainVersion = releaseStubMatcher.group(1);
+            revision = releaseStubMatcher.group(3);
+        } else {
+            ConcurrentLog.warn("STARTUP", "Peer '" + computerName + "': wrong format of version-string: '" + ver + "'. Using default string '" + mainVersion + "/" + revision + "' instead");
+        }
+
+        return new String[]{mainVersion, revision};
     }
 
     public static int revision(final String ver) {
@@ -167,7 +177,7 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
      */
     public static double versvn2combinedVersion(final double version, final int svn) {
         return (Math.rint((version*100000000.0) + (svn))/100000000);
-     }
+    }
 
     /**
      * Timestamp of this version
@@ -181,8 +191,12 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
      * SVN revision of release
      * @return svn revision as integer
      */
-    public int getSvn() {
+    public long getSvn() {
         return this.svn;
+    }
+
+    public String getGit() {
+        return this.git;
     }
 
     /**
@@ -203,7 +217,9 @@ public class yacyVersion implements Comparator<yacyVersion>, Comparable<yacyVers
 
     public double getReleaseGitNr() {
         // combine release number with git number
-        return this.getReleaseNr() + ((getSvn()) / 10000000.0d);
+        double d = getSvn() / 10000000.0d;
+        if (d > 0.0d) d = d / 10000.0d; // long numbers constructed from dates which are four more digits long
+        return this.getReleaseNr() + d;
     }
 
     public String getName() {

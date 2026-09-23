@@ -88,6 +88,7 @@ import net.yacy.cora.document.feed.RSSFeed;
 import net.yacy.cora.document.feed.RSSMessage;
 import net.yacy.cora.document.feed.RSSReader;
 import net.yacy.cora.document.id.MultiProtocolURL;
+import net.yacy.cora.federate.solr.FailCategory;
 import net.yacy.cora.federate.solr.connector.RemoteSolrConnector;
 import net.yacy.cora.federate.solr.connector.SolrConnector;
 import net.yacy.cora.federate.solr.instance.RemoteInstance;
@@ -518,10 +519,17 @@ public final class Protocol {
         final long timestamp = System.currentTimeMillis();
         event.addExpectedRemoteReferences(count);
         SearchResult result = null;
+        final boolean localClash = target.clash(event.peers.mySeed().getIPs());
+        if (localClash) {
+            Network.log.info("remote search: target peer '" + target.getName() + "'/" + target.hash
+                    + " clashes with local peer addresses; using localhost, targetAddressProfile="
+                    + Seed.addressProfile(target.getIPs()) + ", localAddressProfile="
+                    + Seed.addressProfile(event.peers.mySeed().getIPs()));
+        }
         for (String ip: target.getIPs()) {
             //if (ip.indexOf(':') >= 0) System.out.println("Search target: IPv6: " + ip);
             final String targetBaseURL;
-            if (target.clash(event.peers.mySeed().getIPs())) {
+            if (localClash) {
                 targetBaseURL = "http://localhost:" + event.peers.mySeed().getPort();
             } else {
                 targetBaseURL = target.getPublicURL(ip,
@@ -799,7 +807,13 @@ public final class Protocol {
                 writerToLocalIndex.stopWriting();
                 throw new InterruptedException("remoteProcess stopped!");
             }
-            event.addRWIs(container.get(0), false, target.getName() + "/" + target.hash, result.totalCount, time);
+            /* Ensure freshly stored metadata is visible to queries before adding results. */
+            event.query.getSegment().fulltext().commit(true);
+            if (storeDocs != null && !storeDocs.isEmpty()) {
+                event.addNodes(storeDocs, null, snip, false, target.getName() + "/" + target.hash, result.totalCount, true);
+            } else {
+                event.addRWIs(container.get(0), false, target.getName() + "/" + target.hash, result.totalCount, time);
+            }
         } else {
             // feed results as nodes (SolrQuery results) which carry metadata,
             // to prevent a call to getMetaData for RWI results, which would fail (if no metadata in index and no display of these results)
@@ -1720,7 +1734,7 @@ public final class Protocol {
         String result = in.get("result");
         if ( result == null ) {
             String errorCause = "no result from transferRWI";
-            String usedIP = in.get(Seed.IP);
+            final String usedIP = transferTargetIP(in, targetSeed);
             sb.peers.peerActions.interfaceDeparture(targetSeed, usedIP); // disconnect unavailable peer
             return errorCause;
         }
@@ -1729,6 +1743,52 @@ public final class Protocol {
             targetSeed.setFlagAcceptRemoteIndex(false); // the peer does not want our index
             sb.peers.addConnected(targetSeed); // update the peer
             return result;
+        }
+
+        // DHT error propagation: process error URLs reported by remote peer
+        String errorURLs = in.get("errorURL");
+        if ( errorURLs != null && !errorURLs.isEmpty() && !errorURLs.equals(",") ) {
+            final String[] euhs = CommonPattern.COMMA.split(errorURLs.trim());
+            if ( euhs.length > 0 ) {
+                Network.log.info("DHT: Received " + euhs.length + " error URL reports from peer " + targetSeed.getName() + "/[" + targetSeed.hash + "]");
+                for ( final String errorHash : euhs ) {
+                    if ( errorHash == null || errorHash.length() != 12 ) continue;
+                    try {
+                        // Check if we have this URL locally without error status
+                        final URIMetadataNode metadata = segment.fulltext().getMetadata(ASCII.getBytes(errorHash));
+                        if ( metadata != null ) {
+                            // Extract crawl depth if available; default to 0 when missing
+                            int crawldepth = 0;
+                            final Object cd = metadata.getFieldValue(CollectionSchema.crawldepth_i.getSolrFieldName());
+                            if (cd instanceof Integer) {
+                                crawldepth = ((Integer) cd).intValue();
+                            } else if (cd instanceof Long) {
+                                crawldepth = ((Long) cd).intValue();
+                            }
+
+                            // Mark as error to prevent re-distribution via DHT
+                            sb.crawlQueues.errorURL.push(
+                                metadata.url(),
+                                crawldepth,
+                                null,
+                                net.yacy.cora.federate.solr.FailCategory.FINAL_LOAD_CONTEXT,
+                                "DHT error propagation from peer " + targetSeed.getName(),
+                                -1
+                            );
+                            if (Network.log.isFine()) Network.log.fine("DHT: Marked URL hash '" + errorHash + "' as error based on peer report");
+                        }
+                    } catch ( final Exception e ) {
+                        Network.log.warn("DHT: Failed to process error URL hash '" + errorHash + "': " + e.getMessage());
+                    }
+                }
+                EventChannel.channels(EventChannel.DHTRECEIVE).addMessage(
+                    new RSSMessage(
+                        "Received " + euhs.length + " error URL reports from peer " + targetSeed.getName() + "/[" + targetSeed.hash + "]",
+                        "",
+                        targetSeed.hash
+                    )
+                );
+            }
         }
 
         // in now contains a list of unknown hashes
@@ -1757,7 +1817,7 @@ public final class Protocol {
         result = in.get("result");
         if ( result == null ) {
             String errorCause = "no result from transferURL";
-            String usedIP = in.get(Seed.IP);
+            final String usedIP = transferTargetIP(in, targetSeed);
             sb.peers.peerActions.interfaceDeparture(targetSeed, usedIP); // disconnect unavailable peer ip
             return errorCause;
         }
@@ -1767,6 +1827,36 @@ public final class Protocol {
             sb.peers.addConnected(targetSeed); // update the peer
             return result;
         }
+        
+        // Process error URLs reported back by receiver
+        final String rejectedURLs = in.get("errorURL");
+        if (rejectedURLs != null && !rejectedURLs.isEmpty() && !rejectedURLs.equals(",")) {
+            final String[] ruhs = CommonPattern.COMMA.split(rejectedURLs.trim());
+            if (ruhs.length > 0) {
+                Network.log.info("DHT: Received " + ruhs.length + " rejected error URL reports from peer " + targetSeed.getName());
+                for (final String errorHash : ruhs) {
+                    if (errorHash == null || errorHash.length() != 12) continue;
+                    try {
+                        final URIMetadataNode metadata = segment.fulltext().getMetadata(ASCII.getBytes(errorHash));
+                        if (metadata != null) {
+                            // Extract crawl depth safely
+                            int crawldepth = 0;
+                            final Object cd = metadata.getFieldValue("crawldepth_i");
+                            if (cd instanceof Integer) crawldepth = ((Integer) cd).intValue();
+                            else if (cd instanceof Long) crawldepth = ((Long) cd).intValue();
+                            
+                            // Mark as error locally
+                            sb.crawlQueues.errorURL.push(metadata.url(), crawldepth, null,
+                                FailCategory.FINAL_LOAD_CONTEXT,
+                                "DHT error propagation from peer " + targetSeed.getName(), -1);
+                        }
+                    } catch (final Exception e) {
+                        Network.log.warn("DHT: Failed to process rejected error URL hash '" + errorHash + "': " + e.getMessage());
+                    }
+                }
+            }
+        }
+        
         EventChannel.channels(EventChannel.DHTSEND).addMessage(
             new RSSMessage(
                 "Sent " + uhs.length + " URLs to peer " + targetSeed.getName()+ "/[" + targetSeed.hash + "]",
@@ -1774,6 +1864,19 @@ public final class Protocol {
                 targetSeed.hash));
 
         return null;
+    }
+
+    /**
+     * Return the address recorded by a transfer attempt. Malformed responses may
+     * omit that local metadata; in that case use the first address from the
+     * canonical, ordered {@link Seed#getIPs()} view as a last-resort fallback.
+     */
+    static String transferTargetIP(final Map<String, String> response, final Seed targetSeed) {
+        final String usedIP = response == null ? null : response.get(Seed.IP);
+        if (usedIP != null && !usedIP.isEmpty()) return usedIP;
+
+        final Set<String> targetIPs = targetSeed.getIPs();
+        return targetIPs.isEmpty() ? null : targetIPs.iterator().next();
     }
 
     /**

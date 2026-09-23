@@ -1,7 +1,7 @@
 /**
  *  RequestHeader
  *  Copyright 2008 by Michael Peter Christen, mc@yacy.net, Frankfurt a. M., Germany
- *  First released 22.08.2008 at http://yacy.net
+ *  First released 22.08.2008 at https://yacy.net
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -25,9 +25,11 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.security.Principal;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.Enumeration;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import javax.servlet.AsyncContext;
@@ -48,8 +50,6 @@ import javax.servlet.http.Part;
 import net.yacy.cora.document.id.DigestURL;
 import net.yacy.cora.document.id.MultiProtocolURL;
 import net.yacy.cora.util.NumberTools;
-import org.eclipse.jetty.server.CookieCutter;
-import org.eclipse.jetty.util.URIUtil;
 
 /**
  * YaCy servlet request header.
@@ -77,6 +77,9 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
     public static final String X_CACHE = "X-Cache";
     public static final String X_CACHE_LOOKUP = "X-Cache-Lookup";
     public static final String X_Real_IP = "X-Real-IP";
+    /** Trusted effective client IP, populated by the HTTP server after proxy validation. */
+    public static final String EFFECTIVE_CLIENT_IP_ATTRIBUTE =
+            RequestHeader.class.getName() + ".effectiveClientIp";
 
     public static final String COOKIE = "Cookie";
 
@@ -139,8 +142,10 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
     }
 
     public boolean accessFromLocalhost() {
-        // authorization for localhost, only if flag is set to grant localhost access as admin
-        final String clientIP = this.getRemoteAddr();
+        // authorization for localhost, only if flag is set to grant localhost access as admin.
+        // This is an access-control decision, therefore the true socket peer must be used:
+        // the client-controlled (and trivially spoofable) X-Real-IP header must NOT be honored here.
+        final String clientIP = this.getRemoteSocketAddr();
         if ( !Domains.isLocalhost(clientIP) ) {
             return false;
         }
@@ -235,9 +240,22 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
         }
 		String cstr = super.get(COOKIE);
 		if (cstr != null) {
-		    CookieCutter cc = new CookieCutter(); // reuse jetty cookie parser
-		    cc.addCookieField(cstr);
-		    return cc.getCookies();
+		    // parse the Cookie request header (RFC 6265: pairs separated by ';')
+		    final List<Cookie> cookies = new ArrayList<Cookie>();
+		    for (final String pair: cstr.split(";")) {
+		        final int eq = pair.indexOf('=');
+		        if (eq < 0) continue;
+		        final String name = pair.substring(0, eq).trim();
+		        String value = pair.substring(eq + 1).trim();
+		        if (value.length() > 1 && value.charAt(0) == '"' && value.endsWith("\"")) value = value.substring(1, value.length() - 1);
+		        if (name.isEmpty() || name.charAt(0) == '$') continue; // skip RFC 2965 attributes
+		        try {
+		            cookies.add(new Cookie(name, value));
+		        } catch (final IllegalArgumentException e) {
+		            // skip cookie with a name not accepted by the servlet API (reserved token)
+		        }
+		    }
+		    return cookies.isEmpty() ? null : cookies.toArray(new Cookie[cookies.size()]);
 		}
 		return null;
     }
@@ -339,6 +357,9 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
 		return null;
     }
 
+    // Invariant relied on for authorization: the role/principal come solely from the servlet
+    // container's authentication. Do not change these to derive from headers/attributes (which
+    // are client-controllable), else authorization based on them becomes spoofable.
     @Override
     public boolean isUserInRole(String role) {
         if (_request != null) {
@@ -377,7 +398,12 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
             return _request.getRequestURL();
         }
 		StringBuffer sbuf = new StringBuffer(32);
-		URIUtil.appendSchemeHostPort(sbuf, this.getScheme(), this.getServerName(), this.getServerPort());
+		final String scheme = this.getScheme();
+		final int port = this.getServerPort();
+		sbuf.append(scheme).append("://").append(this.getServerName());
+		if (port > 0 && !(("http".equals(scheme) && port == 80) || ("https".equals(scheme) && port == 443))) {
+		    sbuf.append(':').append(port);
+		}
 		sbuf.append(this.getRequestURI());
 		return sbuf;
     }
@@ -471,7 +497,6 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
         }
 
         super.remove(AUTHORIZATION);
-        // TODO: take care of legacy login cookie (and possibly cached UserDB login status)
 
     }
 
@@ -679,13 +704,37 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
 		return super.get(HeaderFramework.CONNECTION_PROP_CLIENTIP);
     }
 
-    public static String client(final ServletRequest request) {
-        String clientHost = request.getRemoteAddr();
-        if (request instanceof HttpServletRequest) {
-        	String XRealIP = ((HttpServletRequest) request).getHeader(X_Real_IP);
-        	if (XRealIP != null && XRealIP.length() > 0) clientHost = XRealIP; // get IP through nginx config "proxy_set_header X-Real-IP $remote_addr;"
+    /**
+     * The IP address of the host that opened the TCP connection (the real socket peer).
+     * <p>
+     * In contrast to {@link #getRemoteAddr()} and {@link #client(ServletRequest)} this
+     * always returns the socket peer. It must therefore be used for authentication and
+     * access-control decisions.
+     *
+     * @return the socket peer IP address
+     */
+    public String getRemoteSocketAddr() {
+        if (this._request != null) {
+            return this._request.getRemoteAddr();
         }
-		return clientHost;
+        return super.get(HeaderFramework.CONNECTION_PROP_CLIENTIP);
+    }
+
+    /**
+     * Resolve the client IP for peer routing and logging. A reverse-proxy address is
+     * honored only when the HTTP server has validated the socket peer and populated
+     * {@link #EFFECTIVE_CLIENT_IP_ATTRIBUTE}. Client-supplied forwarding headers are
+     * never read here directly.
+     *
+     * @param request the servlet request
+     * @return the routing client IP address
+     */
+    public static String client(final ServletRequest request) {
+        final Object effectiveClientIp = request.getAttribute(EFFECTIVE_CLIENT_IP_ATTRIBUTE);
+        if (effectiveClientIp instanceof String && !((String) effectiveClientIp).isEmpty()) {
+            return (String) effectiveClientIp;
+        }
+        return request.getRemoteAddr();
     }
     
     @Override
@@ -697,12 +746,9 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
     }
     
     public static String host(final ServletRequest request) {
-        String clientHost = request.getRemoteHost();
-        if (request instanceof HttpServletRequest) {
-        	String XRealIP = ((HttpServletRequest) request).getHeader(X_Real_IP);
-        	if (XRealIP != null && XRealIP.length() > 0) clientHost = XRealIP; // get IP through nginx config "proxy_set_header X-Real-IP $remote_addr;"
-        }
-		return clientHost;
+        final Object effectiveClientIp = request.getAttribute(EFFECTIVE_CLIENT_IP_ATTRIBUTE);
+        return effectiveClientIp instanceof String && !((String) effectiveClientIp).isEmpty()
+                ? (String) effectiveClientIp : request.getRemoteHost();
     }
 
     @Override
@@ -729,7 +775,7 @@ public class RequestHeader extends HeaderFramework implements HttpServletRequest
             return _request.getLocale();
         } else if (super.containsKey(HeaderFramework.ACCEPT_LANGUAGE)) {
             final String lng = super.get(HeaderFramework.ACCEPT_LANGUAGE);
-            return new Locale(lng);
+            return Locale.forLanguageTag(lng);
         }
         return Locale.getDefault(); // to avoid dependency on Switchboard just use system default
     }

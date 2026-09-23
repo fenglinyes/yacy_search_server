@@ -73,131 +73,139 @@ import net.yacy.kelondro.util.ISO639;
 public class ContentScraper extends AbstractScraper implements Scraper {
 
     private final static int MAX_TAGSIZE = 1024 * 1024;
-	public static final int MAX_DOCSIZE = 40 * 1024 * 1024;
+    public static final int MAX_DOCSIZE = 40 * 1024 * 1024;
 
     private final char degree = '\u00B0';
     private final char[] minuteCharsHTML = "&#039;".toCharArray();
 
     // statics: for initialization of the HTMLFilterAbstractScraper
     /** Set of tag names processed as singletons (no end tag, or not processing the eventual end tag) */
-    private static final Set<String> linkTags0 = new HashSet<String>(12,0.99f);
-    
+    private static final Set<String> linkTags0 = new HashSet<>(12,0.99f);
+
     /** Set of tag names processed by pairs of start and end tag */
-    private static final Set<String> linkTags1 = new HashSet<String>(15,0.99f);
+    private static final Set<String> linkTags1 = new HashSet<>(15,0.99f);
 
     private static final Pattern LB = Pattern.compile("\n");
 
-    public enum TagType {
-    	/** Tag with no end tag (see https://www.w3.org/TR/html51/syntax.html#void-elements),
-    	 * optional end tag (see https://www.w3.org/TR/html51/syntax.html#optional-tags),
-    	 * or where processing directly only the start tag is desired. */
+    public enum TagOp {
+        /** Tag with no end tag (see https://www.w3.org/TR/html51/syntax.html#void-elements),
+         * optional end tag (see https://www.w3.org/TR/html51/syntax.html#optional-tags),
+         * or where processing directly only the start tag is desired. */
         singleton,
         /** Paired tag : has a start tag and an end tag (https://www.w3.org/TR/html51/syntax.html#normal-elements) */
         pair;
     }
 
-    public enum TagName {
-        html(TagType.singleton), // scraped as singleton to get attached properties like 'lang'
-        body(TagType.singleton), // scraped as singleton to get attached properties like 'class'
-        img(TagType.singleton),
-        base(TagType.singleton),
-        frame(TagType.singleton),
-        meta(TagType.singleton),
-        area(TagType.singleton),
-        link(TagType.singleton),
-        embed(TagType.singleton), //added by [MN]
-        param(TagType.singleton), //added by [MN]
-        iframe(TagType.singleton), // scraped as singleton to get such iframes that have no closing tag
-        source(TagType.singleton), // html5 (part of <video> <audio>) - scaped like embed
+    public enum TagType {
+        html(TagOp.singleton, "", ""), // scraped as singleton to get attached properties like 'lang'
+        body(TagOp.singleton, "", ""), // scraped as singleton to get attached properties like 'class'
+        img(TagOp.singleton, "", ""),
+        base(TagOp.singleton, "", ""),
+        frame(TagOp.singleton, "", ""),
+        meta(TagOp.singleton, "", ""),
+        area(TagOp.singleton, "", ""),
+        link(TagOp.singleton, "", ""),
+        embed(TagOp.singleton, "", ""), //added by [MN]
+        param(TagOp.singleton, "", ""), //added by [MN]
+        iframe(TagOp.singleton, "", ""), // scraped as singleton to get such iframes that have no closing tag
+        source(TagOp.singleton, "", ""), // html5 (part of <video> <audio>) - scaped like embed
+        hr(TagOp.singleton, "\n---\n", ""),
 
-        a(TagType.pair),
-        h1(TagType.pair),
-        h2(TagType.pair),
-        h3(TagType.pair),
-        h4(TagType.pair),
-        h5(TagType.pair),
-        h6(TagType.pair),
-        title(TagType.pair),
-        b(TagType.pair),
-        em(TagType.pair),
-        strong(TagType.pair),
-        u(TagType.pair),
-        i(TagType.pair),
-        li(TagType.pair),
-        dt(TagType.pair),
-        dd(TagType.pair),
-        script(TagType.pair),
-        span(TagType.pair),
-        div(TagType.pair),
-        nav(TagType.pair),
-        article(TagType.pair), // html5
-        time(TagType.pair), // html5 <time datetime>
+        a(TagOp.pair, "", ""),
+        p(TagOp.pair, "\n\n", ""),
+        h1(TagOp.pair, "\n\n# ", "\n\n"),
+        h2(TagOp.pair, "\n\n## ", "\n\n"),
+        h3(TagOp.pair, "\n\n### ", "\n\n"),
+        h4(TagOp.pair, "\n\n#### ", "\n\n"),
+        h5(TagOp.pair, "\n\n##### ", "\n\n"),
+        h6(TagOp.pair, "\n\n###### ", "\n\n"),
+        title(TagOp.pair, "", ""),
+        i(TagOp.pair, "*", "*"),
+        em(TagOp.pair, "*", "*"),
+        b(TagOp.pair, "**", "**"),
+        strong(TagOp.pair, "**", "**"),
+        u(TagOp.pair, "_", "_"),
+        li(TagOp.pair, "\n- ", "\n"),
+        dt(TagOp.pair, "", ""),
+        dd(TagOp.pair, "", ""),
+        script(TagOp.pair, "", ""),
+        pre(TagOp.pair, "\n\n^^^\n", "\n^^^\n\n"),
+        span(TagOp.pair, "", ""),
+        div(TagOp.pair, "\n\n", ""),
+        nav(TagOp.pair, "", ""),
+        article(TagOp.pair, "", ""), // html5
+        time(TagOp.pair, "", ""), // html5 <time datetime>
         // tags used to capture tag content
-        // TODO: considere to use </head> or <body> as trigger to scape for text content
-        style(TagType.pair); // embedded css (if not declared as tag content is parsed as text)
+        // TODO: consider to use </head> or <body> as trigger to scrape for text content
+        style(TagOp.pair, "", ""), // embedded css (if not declared as tag content is parsed as text)
 
-        public TagType type;
-        private TagName(final TagType type) {
+        unknown(TagOp.singleton, "", ""); // used when a tag is not recognized
+
+        public TagOp type;
+        public String mdPrefix, mdSuffix;
+        private TagType(final TagOp type, String mdPrefix, String mdSuffix) {
             this.type = type;
+            this.mdPrefix = mdPrefix;
+            this.mdSuffix = mdSuffix;
         }
     }
 
     public static class Tag {
-        public String name;
+        public TagType tagType;
+        public String tagName;
         public Properties opts;
         public CharBuffer content;
-        
-        /** Set to true when this tag should be ignored from scraping */
-        private boolean ignore = false;
-        
-        public Tag(final String name) {
-            this.name = name;
+        private TagValency tv;
+        public Tag(final String name, final TagValency defaultValency) {
+            this.tagName = name;
+            try {this.tagType = TagType.valueOf(name.toLowerCase());} catch (final IllegalArgumentException e) {this.tagType = TagType.unknown;}
+            this.tv = defaultValency;
             this.opts = new Properties();
             this.content = new CharBuffer(MAX_TAGSIZE);
         }
-        public Tag(final String name, final Properties opts) {
-            this.name = name;
+        public Tag(final String name, final TagValency defaultValency, final Properties opts) {
+            this.tagName = name;
+            try {this.tagType = TagType.valueOf(name.toLowerCase());} catch (final IllegalArgumentException e) {this.tagType = TagType.unknown;}
+            this.tv = defaultValency;
             this.opts = opts;
             this.content = new CharBuffer(MAX_TAGSIZE);
         }
-        public Tag(final String name, final Properties opts, final CharBuffer content) {
-            this.name = name;
+        public Tag(final String name, final TagValency defaultValency, final Properties opts, final CharBuffer content) {
+            this.tagName = name;
+            try {this.tagType = TagType.valueOf(name.toLowerCase());} catch (final IllegalArgumentException e) {this.tagType = TagType.unknown;}
+            this.tv = defaultValency;
             this.opts = opts;
             this.content = content;
         }
         public void close() {
-            this.name = null;
+            this.tagType = null;
+            this.tagName = null;
             this.opts = null;
             if (this.content != null) this.content.close();
             this.content = null;
         }
         @Override
-        public void finalize() {
-            this.close();
-        }
-        @Override
         public String toString() {
-            return "<" + name + " " + opts + ">" + content + "</" + name + ">";
+            return "<" + this.tagName + " " + this.opts + ">" + this.content + "</" + this.tagName + ">";
         }
-        
+
         /** @return true when this tag should be ignored from scraping */
         public boolean isIgnore() {
-			return this.ignore;
-		}
-        
-        /**
-         * @param ignore true when this tag should be ignored from scraping
-         */
-        public void setIgnore(final boolean ignore) {
-			this.ignore = ignore;
-		}
+            return this.tv == TagValency.IGNORE;
+        }
+        public TagValency getValency() {
+            return this.tv;
+        }
+        public void setValency(final TagValency tv) {
+            this.tv = tv;
+        }
     }
 
     // all these tags must be given in lowercase, because the tags from the files are compared in lowercase
     static {
-        for (final TagName tag: TagName.values()) {
-            if (tag.type == TagType.singleton) linkTags0.add(tag.name());
-            if (tag.type == TagType.pair) linkTags1.add(tag.name());
+        for (final TagType tag: TagType.values()) {
+            if (tag.type == TagOp.singleton) linkTags0.add(tag.name());
+            if (tag.type == TagOp.pair) linkTags1.add(tag.name());
         }
         //<iframe src="../../../index.htm" name="SELFHTML_in_a_box" width="90%" height="400">
     }
@@ -206,37 +214,38 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     private final List<AnchorURL> anchors;
     private final SizeLimitedMap<DigestURL, String> rss, css;
     private final SizeLimitedMap<AnchorURL, EmbedEntry> embeds; // urlhash/embed relation
-    private final List<ImageEntry> images; 
+    private final List<ImageEntry> images;
     private final SizeLimitedSet<AnchorURL> script, frames, iframes;
-    
-	/**
-	 * URLs of linked data item types referenced from HTML content with standard
-	 * annotations such as RDFa, microdata, microformats or JSON-LD
-	 */
+
+    /**
+     * URLs of linked data item types referenced from HTML content with standard
+     * annotations such as RDFa, microdata, microformats or JSON-LD
+     */
     private final SizeLimitedSet<DigestURL> linkedDataTypes;
-    
+
     private final SizeLimitedMap<String, String> metas;
     private final SizeLimitedMap<String, DigestURL> hreflang, navigation;
-    private LinkedHashSet<String> titles;
+    private final LinkedHashSet<String> titles;
     private final List<String> articles;
     private final List<Date> startDates, endDates;
     //private String headline;
     private List<String>[] headlines;
     private final ClusteredScoreMap<String> bold, italic, underline;
     private final List<String> li, dt, dd;
-    private final CharBuffer content;
+    final CharBuffer content;
     private final EventListenerList htmlFilterEventListeners;
     private double lon, lat;
     private AnchorURL canonical, publisher;
-    
+
     /** The maximum number of URLs to process and store in the anchors property. */
     private final int maxAnchors;
-    
+
     private final VocabularyScraper vocabularyScraper;
-    
-    /** Set of CSS class names whose matching div elements content should be ignored */
-    private final Set<String> ignoreDivClassNames;
-    
+
+    /** Set of CSS class names whose matching div elements may switch from IGNORE to EVAL or vice versa */
+    private final Set<String> valencySwitchTagNames;
+    private final TagValency defaultValency;
+
     private final int timezoneOffset;
     private int breadcrumbs;
 
@@ -253,58 +262,67 @@ public class ContentScraper extends AbstractScraper implements Scraper {
      * evaluation scores: count appearance of specific attributes
      */
     private final Evaluation evaluationScores;
-    
+
     /** Set to true when a limit on content size scraped has been exceeded */
     private boolean contentSizeLimitExceeded;
-    
+
     /** Set to true when the maxAnchors limit has been exceeded */
     private boolean maxAnchorsExceeded;
-    
+
     /**
      * Create an ContentScraper instance
      * @param root the document root url
      * @param maxAnchors the maximum number of URLs to process and store in the anchors property.
      * @param maxLinks the maximum number of links (other than a, area, and canonical and stylesheet links) to store
-     * @param ignoreDivClassNames an eventual set of CSS class names whose matching div elements content should be ignored
+     * @param valencySwitchTagNames an eventual set of CSS class names whose matching div elements content should be ignored
+     * @param defaultValency the valency default; should be TagValency.EVAL by default
      * @param vocabularyScraper handles maps from class names to vocabulary names and from documents to a map from vocabularies to terms
      * @param timezoneOffset local time zone offset
      */
     @SuppressWarnings("unchecked")
-    public ContentScraper(final DigestURL root, final int maxAnchors, final int maxLinks, final Set<String> ignoreDivClassNames, final VocabularyScraper vocabularyScraper, int timezoneOffset) {
+    public ContentScraper(
+            final DigestURL root,
+            final int maxAnchors,
+            final int maxLinks,
+            final Set<String> valencySwitchTagNames,
+            final TagValency defaultValency,
+            final VocabularyScraper vocabularyScraper,
+            final int timezoneOffset) {
         // the root value here will not be used to load the resource.
         // it is only the reference for relative links
         super(linkTags0, linkTags1);
         assert root != null;
         this.root = root;
         this.vocabularyScraper = vocabularyScraper;
-        this.ignoreDivClassNames = ignoreDivClassNames;
+        this.valencySwitchTagNames = valencySwitchTagNames;
+        this.defaultValency = defaultValency;
         this.timezoneOffset = timezoneOffset;
         this.evaluationScores = new Evaluation();
-        this.rss = new SizeLimitedMap<DigestURL, String>(maxLinks);
-        this.css = new SizeLimitedMap<DigestURL, String>(maxLinks);
-        this.anchors = new ArrayList<AnchorURL>();
-        this.images = new ArrayList<ImageEntry>();
+        this.rss = new SizeLimitedMap<>(maxLinks);
+        this.css = new SizeLimitedMap<>(maxLinks);
+        this.anchors = new ArrayList<>();
+        this.images = new ArrayList<>();
         this.icons = new HashMap<>();
-        this.embeds = new SizeLimitedMap<AnchorURL, EmbedEntry>(maxLinks);
-        this.frames = new SizeLimitedSet<AnchorURL>(maxLinks);
-        this.iframes = new SizeLimitedSet<AnchorURL>(maxLinks);
+        this.embeds = new SizeLimitedMap<>(maxLinks);
+        this.frames = new SizeLimitedSet<>(maxLinks);
+        this.iframes = new SizeLimitedSet<>(maxLinks);
         this.linkedDataTypes = new SizeLimitedSet<>(maxLinks);
-        this.metas = new SizeLimitedMap<String, String>(maxLinks);
-        this.hreflang = new SizeLimitedMap<String, DigestURL>(maxLinks);
-        this.navigation = new SizeLimitedMap<String, DigestURL>(maxLinks);
-        this.script = new SizeLimitedSet<AnchorURL>(maxLinks);
-        this.titles = new LinkedHashSet<String>();
-        this.articles = new ArrayList<String>();
+        this.metas = new SizeLimitedMap<>(maxLinks);
+        this.hreflang = new SizeLimitedMap<>(maxLinks);
+        this.navigation = new SizeLimitedMap<>(maxLinks);
+        this.script = new SizeLimitedSet<>(maxLinks);
+        this.titles = new LinkedHashSet<>();
+        this.articles = new ArrayList<>();
         this.startDates = new ArrayList<>();
         this.endDates = new ArrayList<>();
         this.headlines = (List<String>[]) Array.newInstance(ArrayList.class, 6);
-        for (int i = 0; i < this.headlines.length; i++) this.headlines[i] = new ArrayList<String>();
-        this.bold = new ClusteredScoreMap<String>(false);
-        this.italic = new ClusteredScoreMap<String>(false);
-        this.underline = new ClusteredScoreMap<String>(false);
-        this.li = new ArrayList<String>();
-        this.dt = new ArrayList<String>();
-        this.dd = new ArrayList<String>();
+        for (int i = 0; i < this.headlines.length; i++) this.headlines[i] = new ArrayList<>();
+        this.bold = new ClusteredScoreMap<>(false);
+        this.italic = new ClusteredScoreMap<>(false);
+        this.underline = new ClusteredScoreMap<>(false);
+        this.li = new ArrayList<>();
+        this.dt = new ArrayList<>();
+        this.dd = new ArrayList<>();
         this.content = new CharBuffer(MAX_DOCSIZE, 1024);
         this.htmlFilterEventListeners = new EventListenerList();
         this.lon = 0.0d;
@@ -317,7 +335,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         this.maxAnchorsExceeded = false;
         this.maxAnchors = maxAnchors;
     }
-    
+
     /**
      * Create an ContentScraper instance
      * @param root the document root url
@@ -325,8 +343,19 @@ public class ContentScraper extends AbstractScraper implements Scraper {
      * @param vocabularyScraper handles maps from class names to vocabulary names and from documents to a map from vocabularies to terms
      * @param timezoneOffset local time zone offset
      */
-    public ContentScraper(final DigestURL root, final int maxLinks, final Set<String> ignore_class_name, final VocabularyScraper vocabularyScraper, int timezoneOffset) {
-        this(root, Integer.MAX_VALUE, maxLinks, ignore_class_name, vocabularyScraper, timezoneOffset);
+    public ContentScraper(
+            final DigestURL root,
+            final int maxLinks,
+            final Set<String> valencySwitchTagNames,
+            final TagValency defaultValency,
+            final VocabularyScraper vocabularyScraper,
+            final int timezoneOffset) {
+        this(root, Integer.MAX_VALUE, maxLinks, valencySwitchTagNames, defaultValency, vocabularyScraper, timezoneOffset);
+    }
+
+    @Override
+    public TagValency defaultValency() {
+        return this.defaultValency;
     }
 
     @Override
@@ -337,16 +366,16 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     @Override
     public void scrapeText(final char[] newtext0, final Tag insideTag) {
         if (insideTag != null) {
-        	if(insideTag.ignore) {
-        		return;
-        	}
-			if ((TagName.script.name().equals(insideTag.name) || TagName.style.name().equals(insideTag.name))) {
-				return;
-			}
+            if (insideTag.tv == TagValency.IGNORE) {
+                return;
+            }
+            if ((TagType.script.name().equals(insideTag.tagName) || TagType.style.name().equals(insideTag.tagName))) {
+                return;
+            }
         }
         int p, pl, q, s = 0;
-        char[] newtext = CharacterCoding.html2unicode(new String(newtext0)).toCharArray();
-        
+        final char[] newtext = CharacterCoding.html2unicode(new String(newtext0)).toCharArray();
+
         // match evaluation pattern
         this.evaluationScores.match(Element.text, newtext);
 
@@ -367,36 +396,40 @@ public class ContentScraper extends AbstractScraper implements Scraper {
             if (q < 0) break location;
             int r = p;
             while (r-- > 1) {
-                if (newtext[r] == ' ') {
-                    r--;
-                    if (newtext[r] == 'N') {
-                        this.lat =  Double.parseDouble(new String(newtext, r + 2, p - r - 2)) +
-                                    Double.parseDouble(new String(newtext, p + pl + 1, q - p - pl - 1)) / 60.0d;
-                        if (this.lon != 0.0d) break location;
-                        s = q + 6;
-                        continue location;
+                try {
+                    if (newtext[r] == ' ') {
+                        r--;
+                        if (newtext[r] == 'N') {
+                            this.lat =  Double.parseDouble(new String(newtext, r + 2, p - r - 2)) +
+                                        Double.parseDouble(new String(newtext, p + pl + 1, q - p - pl - 1)) / 60.0d;
+                            if (this.lon != 0.0d) break location;
+                            s = q + 6;
+                            continue location;
+                        }
+                        if (newtext[r] == 'S') {
+                            this.lat = -Double.parseDouble(new String(newtext, r + 2, p - r - 2)) -
+                                        Double.parseDouble(new String(newtext, p + pl + 1, q - p - pl - 1)) / 60.0d;
+                            if (this.lon != 0.0d) break location;
+                            s = q + 6;
+                            continue location;
+                        }
+                        if (newtext[r] == 'E') {
+                            this.lon =  Double.parseDouble(new String(newtext, r + 2, p - r - 2)) +
+                                        Double.parseDouble(new String(newtext, p + pl + 1, q - p - pl - 1)) / 60.0d;
+                            if (this.lat != 0.0d) break location;
+                            s = q + 6;
+                            continue location;
+                        }
+                        if (newtext[r] == 'W') {
+                            this.lon = -Double.parseDouble(new String(newtext, r + 2, p - r - 2)) -
+                                        Double.parseDouble(new String(newtext, p + 2, q - p - pl - 1)) / 60.0d;
+                            if (this.lat != 0.0d) break location;
+                            s = q + 6;
+                            continue location;
+                        }
+                        break location;
                     }
-                    if (newtext[r] == 'S') {
-                        this.lat = -Double.parseDouble(new String(newtext, r + 2, p - r - 2)) -
-                                    Double.parseDouble(new String(newtext, p + pl + 1, q - p - pl - 1)) / 60.0d;
-                        if (this.lon != 0.0d) break location;
-                        s = q + 6;
-                        continue location;
-                    }
-                    if (newtext[r] == 'E') {
-                        this.lon =  Double.parseDouble(new String(newtext, r + 2, p - r - 2)) +
-                                    Double.parseDouble(new String(newtext, p + pl + 1, q - p - pl - 1)) / 60.0d;
-                        if (this.lat != 0.0d) break location;
-                        s = q + 6;
-                        continue location;
-                    }
-                    if (newtext[r] == 'W') {
-                        this.lon = -Double.parseDouble(new String(newtext, r + 2, p - r - 2)) -
-                                    Double.parseDouble(new String(newtext, p + 2, q - p - pl - 1)) / 60.0d;
-                        if (this.lat != 0.0d) break location;
-                        s = q + 6;
-                        continue location;
-                    }
+                } catch (final NumberFormatException e) {
                     break location;
                 }
             }
@@ -404,7 +437,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         }
         // find tags inside text
         String b = cleanLine(stripAllTags(newtext));
-        if ((insideTag != null) && (!(insideTag.name.equals(TagName.a.name())))) {
+        if ((insideTag != null) && (insideTag.tagType != TagType.a)) {
             // texts inside tags sometimes have no punctuation at the line end
             // this is bad for the text semantics, because it is not possible for the
             // condenser to distinguish headlines from text beginnings.
@@ -415,26 +448,26 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         }
         // find absolute URLs inside text
         final Object[] listeners = this.htmlFilterEventListeners.getListenerList();
-        List<ContentScraperListener> anchorListeners = new ArrayList<>();
+        final List<ContentScraperListener> anchorListeners = new ArrayList<>();
         for (int i = 0; i < listeners.length; i += 2) {
             if (listeners[i] == ContentScraperListener.class) {
-            	anchorListeners.add((ContentScraperListener)listeners[i+1]);
+                anchorListeners.add((ContentScraperListener)listeners[i+1]);
             }
         }
-        
+
         if(!this.maxAnchorsExceeded) {
-        	int maxLinksToDetect = this.maxAnchors - this.anchors.size();
-        	if(maxLinksToDetect < Integer.MAX_VALUE) {
-        		/* Add one to the anchors limit to detect when the limit is exceeded */
-        		maxLinksToDetect++;
-        	}
-        	findAbsoluteURLs(b, this.anchors, anchorListeners, maxLinksToDetect);
-        	if(this.anchors.size() > this.maxAnchors) {
-        		this.maxAnchorsExceeded = true;
-        		this.anchors.remove(this.anchors.size() -1);
-        	}
+            int maxLinksToDetect = this.maxAnchors - this.anchors.size();
+            if(maxLinksToDetect < Integer.MAX_VALUE) {
+                /* Add one to the anchors limit to detect when the limit is exceeded */
+                maxLinksToDetect++;
+            }
+            findAbsoluteURLs(b, this.anchors, anchorListeners, maxLinksToDetect);
+            if(this.anchors.size() > this.maxAnchors) {
+                this.maxAnchorsExceeded = true;
+                this.anchors.remove(this.anchors.size() -1);
+            }
         }
-        
+
         // append string to content
         if (!b.isEmpty()) {
             this.content.append(b);
@@ -443,12 +476,12 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     }
 
     private final static Pattern protp = Pattern.compile("smb://|ftp://|http://|https://");
-    
+
     /** A regular expression pattern matching any whitespace character */
     private final static Pattern WHITESPACE_PATTERN = Pattern.compile("\\s");
-    
+
     /**
-     * Try to detect and parse absolute URLs in text (at most maxURLs) , then update the urls collection and fire anchorAdded event on listeners. Any parameter can be null. 
+     * Try to detect and parse absolute URLs in text (at most maxURLs) , then update the urls collection and fire anchorAdded event on listeners. Any parameter can be null.
      * @param text the text to parse
      * @param urls a mutable collection of URLs to fill.
      * @param listeners a collection of listeners to trigger.
@@ -457,7 +490,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
      */
     public static long findAbsoluteURLs(final String text, final Collection<AnchorURL> urls, final Collection<ContentScraperListener> listeners, final long maxURLs) {
         if(text == null) {
-        	return 0;
+            return 0;
         }
         int schemePosition, offset = 0;
         boolean hasWhiteSpace;
@@ -465,106 +498,106 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         AnchorURL url;
         final Matcher urlSchemeMatcher = protp.matcher(text);
         final Matcher whiteSpaceMatcher = WHITESPACE_PATTERN.matcher(text);
-        
+
         long detectedURLsCount = 0;
         while (offset < text.length() && detectedURLsCount < maxURLs) {
             if(!urlSchemeMatcher.find(offset)) {
-            	break;
+                break;
             }
             schemePosition = urlSchemeMatcher.start();
-            
+
             hasWhiteSpace = whiteSpaceMatcher.find(urlSchemeMatcher.end());
             urlString = text.substring(schemePosition, hasWhiteSpace ? whiteSpaceMatcher.start() : text.length());
-            
+
             if (urlString.endsWith(".")) {
-            	urlString = urlString.substring(0, urlString.length() - 1); // remove the '.' that was appended above
+                urlString = urlString.substring(0, urlString.length() - 1); // remove the '.' that was appended above
             }
             /* URLs can contain brackets, furthermore as they can even be reserved characters in the URI syntax (see https://tools.ietf.org/html/rfc3986#section-2.2)
              * But when unpaired, in most cases this is that the unpaired bracket is not part of the URL, but rather used to wrap it in the text*/
             urlString = removeUnpairedBrackets(urlString, '(', ')');
             urlString = removeUnpairedBrackets(urlString, '{', '}');
-           	urlString = removeUnpairedBrackets(urlString, '[', ']');
-            
+               urlString = removeUnpairedBrackets(urlString, '[', ']');
+
             offset = schemePosition + urlString.length();
             try {
-            	url = new AnchorURL(urlString);
-            	detectedURLsCount++;
-            	if(urls != null) {
-            		urls.add(url);
-            	}
-            	if(listeners != null) {
-            		for(ContentScraperListener listener : listeners) {
-            			listener.anchorAdded(url.toNormalform(false));
-            		}
-            	}
+                url = new AnchorURL(urlString);
+                detectedURLsCount++;
+                if(urls != null) {
+                    urls.add(url);
+                }
+                if(listeners != null) {
+                    for(final ContentScraperListener listener : listeners) {
+                        listener.anchorAdded(url.toNormalform(false));
+                    }
+                }
             } catch (final MalformedURLException ignored) {}
         }
         return detectedURLsCount;
     }
-    
+
     /**
-     * Try to detect and parse absolute URLs in text, then update the urls collection and fire anchorAdded event on listeners. Any parameter can be null. 
+     * Try to detect and parse absolute URLs in text, then update the urls collection and fire anchorAdded event on listeners. Any parameter can be null.
      * @param text the text to parse
      * @param urls a mutable collection of URLs to fill.
      * @param listeners a collection of listeners to trigger.
      */
     public static void findAbsoluteURLs(final String text, final Collection<AnchorURL> urls, final Collection<ContentScraperListener> listeners) {
-    	findAbsoluteURLs(text, urls, listeners, Long.MAX_VALUE);
+        findAbsoluteURLs(text, urls, listeners, Long.MAX_VALUE);
     }
 
-	/**
-	 * Analyze bracket pairs found in the string and eventually
-	 * return a truncated version of that string when one or more pairs are incomplete
-	 * 
-	 * @param str
-	 *            the string to analyze
-	 * @param openingMark
-	 *            the opening bracket character (example : '{')
-	 * @param closingMark
-	 *            the closing bracket character (example : '}')
-	 * @return the original string or a truncated copy
-	 */
-	protected static String removeUnpairedBrackets(final String str, final char openingMark,
-			final char closingMark) {
-		if(str == null) {
-			return null;
-		}
-		String result = str;
-		char ch;
-		int depth = 0, index = 0, lastUnpairedOpeningIndex = -1;
-		/* Loop on all characters of the string */
-		for(; index < str.length(); index++) {
-			ch = str.charAt(index);
-			if(ch == openingMark) {
-				if(depth == 0) {
-					lastUnpairedOpeningIndex = index;
-				}
-				depth++;
-			} else if(ch == closingMark) {
-				depth--;
-				if(depth == 0) {
-					lastUnpairedOpeningIndex = -1;
-				}
-			}
-			if(depth < 0) {
-				/* Unpaired closing mark : stop the loop here */
-				break;
-			}
-		}
-		
-		if (depth > 0) {
-			/* One or more unpaired opening marks : truncate at the first opening level */
-			if(lastUnpairedOpeningIndex >= 0) {
-				result = str.substring(0, lastUnpairedOpeningIndex);
-			}
-		} else if (depth < 0) {
-			/* One or more unpaired closing marks : truncate at the current index as the loop should have been exited with a break */
-			if(index >= 0) {
-				result = str.substring(0, index);
-			}
-		}
-		return result;
-	}
+    /**
+     * Analyze bracket pairs found in the string and eventually
+     * return a truncated version of that string when one or more pairs are incomplete
+     *
+     * @param str
+     *            the string to analyze
+     * @param openingMark
+     *            the opening bracket character (example : '{')
+     * @param closingMark
+     *            the closing bracket character (example : '}')
+     * @return the original string or a truncated copy
+     */
+    protected static String removeUnpairedBrackets(final String str, final char openingMark,
+            final char closingMark) {
+        if(str == null) {
+            return null;
+        }
+        String result = str;
+        char ch;
+        int depth = 0, index = 0, lastUnpairedOpeningIndex = -1;
+        /* Loop on all characters of the string */
+        for(; index < str.length(); index++) {
+            ch = str.charAt(index);
+            if(ch == openingMark) {
+                if(depth == 0) {
+                    lastUnpairedOpeningIndex = index;
+                }
+                depth++;
+            } else if(ch == closingMark) {
+                depth--;
+                if(depth == 0) {
+                    lastUnpairedOpeningIndex = -1;
+                }
+            }
+            if(depth < 0) {
+                /* Unpaired closing mark : stop the loop here */
+                break;
+            }
+        }
+
+        if (depth > 0) {
+            /* One or more unpaired opening marks : truncate at the first opening level */
+            if(lastUnpairedOpeningIndex >= 0) {
+                result = str.substring(0, lastUnpairedOpeningIndex);
+            }
+        } else if (depth < 0) {
+            /* One or more unpaired closing marks : truncate at the current index as the loop should have been exited with a break */
+            if(index >= 0) {
+                result = str.substring(0, index);
+            }
+        }
+        return result;
+    }
 
     /**
      * @param relativePath relative path to this document base URL
@@ -577,51 +610,51 @@ public class ContentScraper extends AbstractScraper implements Scraper {
             return null;
         }
     }
-    
-	/**
-	 * Parse the eventual microdata itemtype attribute of a tag and extract its
-	 * valid URL tokens when the itemscope attribute is present.
-	 * 
-	 * @param tagAttributes parsed HTML tag attributes.
-	 * @return a set of URLs eventually empty when no itemtype attribute is present
-	 *         or when its value is not valid
-	 * @see <a href="https://www.w3.org/TR/microdata/#dfn-itemtype">itemtype
-	 *      definition at W3C</a>
-	 * @see <a href=
-	 *      "https://html.spec.whatwg.org/multipage/microdata.html#attr-itemtype">itemtype
-	 *      definition at WHATWG</a>
-	 */
-	private Set<DigestURL> parseMicrodataItemType(final Properties tagAttributes) {
-		final Set<DigestURL> types = new HashSet<>();
-		if (tagAttributes != null) {
-			/*
-			 * The itemtype attribute must not be specified on elements that do not have an
-			 * itemscope attribute specified. So we lazily check here for itemscope boolean
-			 * attribute presence (strictly conforming parsing would also check it has no
-			 * value or the value is the empty string or "itemscope")
-			 */
-			if (tagAttributes.getProperty("itemscope") != null) {
-				final Set<String> itemTypes = parseSpaceSeparatedTokens(tagAttributes.getProperty("itemtype"));
 
-				for (final String itemType : itemTypes) {
-					try {
-						types.add(new DigestURL(itemType));
-					} catch (final MalformedURLException ignored) {
-						/* Each itemtype space-separated token must be a valid absolute URL */
-					}
-				}
-			}
-		}
-		return types;
-	}
-    
+    /**
+     * Parse the eventual microdata itemtype attribute of a tag and extract its
+     * valid URL tokens when the itemscope attribute is present.
+     *
+     * @param tagAttributes parsed HTML tag attributes.
+     * @return a set of URLs eventually empty when no itemtype attribute is present
+     *         or when its value is not valid
+     * @see <a href="https://www.w3.org/TR/microdata/#dfn-itemtype">itemtype
+     *      definition at W3C</a>
+     * @see <a href=
+     *      "https://html.spec.whatwg.org/multipage/microdata.html#attr-itemtype">itemtype
+     *      definition at WHATWG</a>
+     */
+    private Set<DigestURL> parseMicrodataItemType(final Properties tagAttributes) {
+        final Set<DigestURL> types = new HashSet<>();
+        if (tagAttributes != null) {
+            /*
+             * The itemtype attribute must not be specified on elements that do not have an
+             * itemscope attribute specified. So we lazily check here for itemscope boolean
+             * attribute presence (strictly conforming parsing would also check it has no
+             * value or the value is the empty string or "itemscope")
+             */
+            if (tagAttributes.getProperty("itemscope") != null) {
+                final Set<String> itemTypes = parseSpaceSeparatedTokens(tagAttributes.getProperty("itemtype"));
+
+                for (final String itemType : itemTypes) {
+                    try {
+                        types.add(new DigestURL(itemType));
+                    } catch (final MalformedURLException ignored) {
+                        /* Each itemtype space-separated token must be a valid absolute URL */
+                    }
+                }
+            }
+        }
+        return types;
+    }
+
     private void checkOpts(final Tag tag) {
         // vocabulary classes
         final String classprop = tag.opts.getProperty("class", EMPTY_STRING);
         this.vocabularyScraper.check(this.root, classprop, tag.content);
-        
+
         // itemprop microdata property (standard definition at https://www.w3.org/TR/microdata/#dfn-attr-itemprop)
-        String itemprop = tag.opts.getProperty("itemprop");
+        final String itemprop = tag.opts.getProperty("itemprop");
         if (itemprop != null) {
             String propval = tag.opts.getProperty("content"); // value for <meta itemprop="" content=""> see https://html.spec.whatwg.org/multipage/microdata.html#values
             if (propval == null) propval = tag.opts.getProperty("datetime"); // html5 + schema.org#itemprop example: <time itemprop="startDate" datetime="2016-01-26">today</time> while each prop is optional
@@ -639,83 +672,83 @@ public class ContentScraper extends AbstractScraper implements Scraper {
                     case "startDate": // <meta itemprop="startDate" content="2016-04-21T20:00">
                         try {
                             // parse ISO 8601 date
-                            Date startDate = ISO8601Formatter.FORMATTER.parse(propval, this.timezoneOffset).getTime();
+                            final Date startDate = ISO8601Formatter.FORMATTER.parse(propval, this.timezoneOffset).getTime();
                             this.startDates.add(startDate);
-                        } catch (ParseException e) {}
+                        } catch (final ParseException e) {}
                         break;
                     case "endDate":
                         try {
                             // parse ISO 8601 date
-                            Date endDate = ISO8601Formatter.FORMATTER.parse(propval, this.timezoneOffset).getTime();
+                            final Date endDate = ISO8601Formatter.FORMATTER.parse(propval, this.timezoneOffset).getTime();
                             this.endDates.add(endDate);
-                        } catch (ParseException e) {}
+                        } catch (final ParseException e) {}
                         break;
                 }
             }
         }
     }
-    
-	/**
-	 * Parses sizes icon link attribute. (see
-	 * http://www.w3.org/TR/html5/links.html#attr-link-sizes) Eventual
-	 * duplicates are removed.
-	 * 
-	 * @param sizesAttr
-	 *            sizes attribute string, may be null
-	 * @return a set of sizes eventually empty.
-	 */
-	public static Set<Dimension> parseSizes(String sizesAttr) {
-		Set<Dimension> sizes = new HashSet<Dimension>();
-		Set<String> tokens = parseSpaceSeparatedTokens(sizesAttr);
-		for (String token : tokens) {
-			/*
-			 * "any" keyword may be present, but doesn't have to produce a
-			 * dimension result
-			 */
-			if (token != null) {
-				Matcher matcher = IconEntry.SIZE_PATTERN.matcher(token);
-				if (matcher.matches()) {
-					/* With given pattern no NumberFormatException can occur */
-					sizes.add(new Dimension(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))));
-				}
-			}
-		}
-		return sizes;
-	}
 
-	/**
-	 * Parses a space separated tokens attribute value (see
-	 * http://www.w3.org/TR/html5/infrastructure.html#space-separated-tokens).
-	 * Eventual duplicates are removed.
-	 * 
-	 * @param attr
-	 *            attribute string, may be null
-	 * @return a set of tokens eventually empty
-	 */
-	public static Set<String> parseSpaceSeparatedTokens(final String attr) {
-		Set<String> tokens = new HashSet<>();
-		/* Check attr string is not empty to avoid adding a single empty string
-		 * in result */
-		if (attr != null && !attr.trim().isEmpty()) {
-			String[] items = attr.trim().split(CommonPattern.SPACES.pattern());
-			Collections.addAll(tokens, items);
-		}
-		return tokens;
-	}
-    
+    /**
+     * Parses sizes icon link attribute. (see
+     * http://www.w3.org/TR/html5/links.html#attr-link-sizes) Eventual
+     * duplicates are removed.
+     *
+     * @param sizesAttr
+     *            sizes attribute string, may be null
+     * @return a set of sizes eventually empty.
+     */
+    public static Set<Dimension> parseSizes(final String sizesAttr) {
+        final Set<Dimension> sizes = new HashSet<>();
+        final Set<String> tokens = parseSpaceSeparatedTokens(sizesAttr);
+        for (final String token : tokens) {
+            /*
+             * "any" keyword may be present, but doesn't have to produce a
+             * dimension result
+             */
+            if (token != null) {
+                final Matcher matcher = IconEntry.SIZE_PATTERN.matcher(token);
+                if (matcher.matches()) {
+                    /* With given pattern no NumberFormatException can occur */
+                    sizes.add(new Dimension(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))));
+                }
+            }
+        }
+        return sizes;
+    }
+
+    /**
+     * Parses a space separated tokens attribute value (see
+     * http://www.w3.org/TR/html5/infrastructure.html#space-separated-tokens).
+     * Eventual duplicates are removed.
+     *
+     * @param attr
+     *            attribute string, may be null
+     * @return a set of tokens eventually empty
+     */
+    public static Set<String> parseSpaceSeparatedTokens(final String attr) {
+        final Set<String> tokens = new HashSet<>();
+        /* Check attr string is not empty to avoid adding a single empty string
+         * in result */
+        if (attr != null && !attr.trim().isEmpty()) {
+            final String[] items = attr.trim().split(CommonPattern.SPACES.pattern());
+            Collections.addAll(tokens, items);
+        }
+        return tokens;
+    }
+
     /**
      * Retain only icon relations (standard and non standard) from tokens .
      * @param relTokens relationship tokens (parsed from a rel attribute)
      * @return a Set of icon relations, eventually empty
      */
-    public Set<String> retainIconRelations(Collection<String> relTokens) {
-    	HashSet<String> iconRels = new HashSet<>();
-    	for(String token : relTokens) {
-    		if(IconLinkRelations.isIconRel(token)) {
-    			iconRels.add(token.toLowerCase(Locale.ENGLISH));
-    		}
-    	}
-    	return iconRels;
+    public Set<String> retainIconRelations(final Collection<String> relTokens) {
+        final HashSet<String> iconRels = new HashSet<>();
+        for(final String token : relTokens) {
+            if(IconLinkRelations.isIconRel(token)) {
+                iconRels.add(token.toLowerCase(Locale.ENGLISH));
+            }
+        }
+        return iconRels;
     }
 
     /**
@@ -723,16 +756,18 @@ public class ContentScraper extends AbstractScraper implements Scraper {
      * @param tag the tag to parse. Must not be null.
      */
     @Override
-    public void scrapeTag0(final Tag tag) {
-    	if(tag.ignore) {
-    		return;
-    	}
-        checkOpts(tag);
-        if (tag.name.equalsIgnoreCase("img")) {
+    public void scrapeSingletonTag(final Tag tag) {
+        if (tag.tv == TagValency.IGNORE) {
+            return;
+        }
+
+        // scrape tag attributes
+        this.checkOpts(tag);
+        if (tag.tagType == TagType.img) {
             final String src = tag.opts.getProperty("src", EMPTY_STRING);
             try {
                 if (src.length() > 0) {
-                    final DigestURL url = absolutePath(src);
+                    final DigestURL url = this.absolutePath(src);
                     if (url != null) {
                         // use to allow parse of "550px", with better performance as Numberformat.parse
                         final int width = NumberTools.parseIntDecSubstring(tag.opts.getProperty("width", "-1")); // Integer.parseInt fails on "200px"
@@ -743,29 +778,29 @@ public class ContentScraper extends AbstractScraper implements Scraper {
                 }
             } catch (final NumberFormatException e) {}
             this.evaluationScores.match(Element.imgpath, src);
-        } else if(tag.name.equalsIgnoreCase("base")) {
-        	final String baseHref = tag.opts.getProperty("href", EMPTY_STRING);
-        	if(!baseHref.isEmpty()) {
-        		/* We must use here AnchorURL.newAnchor as the base href may also be an URL relative to the document URL */
-        		try {
-        			this.root = AnchorURL.newAnchor(this.root, baseHref);
-        		} catch (final MalformedURLException | RuntimeException ignored) {
-        			/* Nothing more to do when the base URL is malformed */
-        		}
-        	}
-        } else if (tag.name.equalsIgnoreCase("frame")) {
-            final AnchorURL src = absolutePath(tag.opts.getProperty("src", EMPTY_STRING));
-            if(src != null) {
-            	tag.opts.put("src", src.toNormalform(true));
-            	src.setAll(tag.opts);
-            	//this.addAnchor(src); // don't add the frame to the anchors because the webgraph should not contain such links (by definition)
-            	this.frames.add(src);
-            	this.evaluationScores.match(Element.framepath, src.toNormalform(true));
+        } else if(tag.tagType == TagType.base) {
+            final String baseHref = tag.opts.getProperty("href", EMPTY_STRING);
+            if(!baseHref.isEmpty()) {
+                /* We must use here AnchorURL.newAnchor as the base href may also be an URL relative to the document URL */
+                try {
+                    this.root = AnchorURL.newAnchor(this.root, baseHref);
+                } catch (final MalformedURLException | RuntimeException ignored) {
+                    /* Nothing more to do when the base URL is malformed */
+                }
             }
-        } else if (tag.name.equalsIgnoreCase("body")) {
+        } else if (tag.tagType == TagType.frame) {
+            final AnchorURL src = this.absolutePath(tag.opts.getProperty("src", EMPTY_STRING));
+            if(src != null) {
+                tag.opts.put("src", src.toNormalform(true));
+                src.setAll(tag.opts);
+                //this.addAnchor(src); // don't add the frame to the anchors because the webgraph should not contain such links (by definition)
+                this.frames.add(src);
+                this.evaluationScores.match(Element.framepath, src.toNormalform(true));
+            }
+        } else if (tag.tagType == TagType.body) {
             final String classprop = tag.opts.getProperty("class", EMPTY_STRING);
             this.evaluationScores.match(Element.bodyclass, classprop);
-        } else if (tag.name.equalsIgnoreCase("meta")) {
+        } else if (tag.tagType == TagType.meta) {
             final String content = tag.opts.getProperty("content", EMPTY_STRING);
             String name = tag.opts.getProperty("name", EMPTY_STRING);
             if (name.length() > 0) {
@@ -782,48 +817,48 @@ public class ContentScraper extends AbstractScraper implements Scraper {
             if (name.length() > 0) {
                 this.metas.put(name.toLowerCase(), content);
             }
-        } else if (tag.name.equalsIgnoreCase("area")) {
+        } else if (tag.tagType == TagType.area) {
             final String areatitle = cleanLine(tag.opts.getProperty("title", EMPTY_STRING));
             //String alt   = tag.opts.getProperty("alt",EMPTY_STRING);
             final String href  = tag.opts.getProperty("href", EMPTY_STRING);
             if (href.length() > 0) {
                 tag.opts.put("name", areatitle);
-                AnchorURL url = absolutePath(href);
+                final AnchorURL url = this.absolutePath(href);
                 if(url != null) {
-                	tag.opts.put("href", url.toNormalform(true));
-                	url.setAll(tag.opts);
-                	this.addAnchor(url);
+                    tag.opts.put("href", url.toNormalform(true));
+                    url.setAll(tag.opts);
+                    this.addAnchor(url);
                 }
             }
-        } else if (tag.name.equalsIgnoreCase("link")) {
+        } else if (tag.tagType == TagType.link) {
             final String href = tag.opts.getProperty("href", EMPTY_STRING);
-            final AnchorURL newLink = absolutePath(href);
+            final AnchorURL newLink = this.absolutePath(href);
 
             if (newLink != null) {
                 tag.opts.put("href", newLink.toNormalform(true));
-                String rel = tag.opts.getProperty("rel", EMPTY_STRING);
+                final String rel = tag.opts.getProperty("rel", EMPTY_STRING);
                 /* Rel attribute is supposed to be a set of space-separated tokens */
-                Set<String> relTokens = parseSpaceSeparatedTokens(rel);
+                final Set<String> relTokens = parseSpaceSeparatedTokens(rel);
 
                 final String linktitle = tag.opts.getProperty("title", EMPTY_STRING);
                 final String type = tag.opts.getProperty("type", EMPTY_STRING);
                 final String hreflang = tag.opts.getProperty("hreflang", EMPTY_STRING);
 
-                Set<String> iconRels = retainIconRelations(relTokens);
+                final Set<String> iconRels = this.retainIconRelations(relTokens);
                 /* Distinguish icons from images. It will enable for example to later search only images and no icons */
                 if (!iconRels.isEmpty()) {
-                	String sizesAttr = tag.opts.getProperty("sizes", EMPTY_STRING);
-                	Set<Dimension> sizes = parseSizes(sizesAttr);
-                	IconEntry icon = this.icons.get(newLink);
-                	/* There is already an icon with same URL for this document : 
-                	 * they may have different rel attribute or different sizes (multi sizes ico file) or this may be a duplicate */
-                	if(icon != null) {
-                		icon.getRel().addAll(iconRels);
-                		icon.getSizes().addAll(sizes);
-                	} else {
-                		icon = new IconEntry(newLink, iconRels, sizes);
-                		this.icons.put(newLink, icon);
-                	}
+                    final String sizesAttr = tag.opts.getProperty("sizes", EMPTY_STRING);
+                    final Set<Dimension> sizes = parseSizes(sizesAttr);
+                    IconEntry icon = this.icons.get(newLink);
+                    /* There is already an icon with same URL for this document :
+                     * they may have different rel attribute or different sizes (multi sizes ico file) or this may be a duplicate */
+                    if(icon != null) {
+                        icon.getRel().addAll(iconRels);
+                        icon.getSizes().addAll(sizes);
+                    } else {
+                        icon = new IconEntry(newLink, iconRels, sizes);
+                        this.icons.put(newLink, icon);
+                    }
                 } else if (rel.equalsIgnoreCase("canonical")) {
                     tag.opts.put("name", this.titles.size() == 0 ? "" : this.titles.iterator().next());
                     newLink.setAll(tag.opts);
@@ -846,11 +881,11 @@ public class ContentScraper extends AbstractScraper implements Scraper {
                     this.addAnchor(newLink);
                 }
             }
-        } else if(tag.name.equalsIgnoreCase("embed") || tag.name.equalsIgnoreCase("source")) { //html5 tag
+        } else if(tag.tagType == TagType.embed || tag.tagType == TagType.source) { //html5 tag
             final String src = tag.opts.getProperty("src", EMPTY_STRING);
             try {
                 if (src.length() > 0) {
-                    final AnchorURL url = absolutePath(src);
+                    final AnchorURL url = this.absolutePath(src);
                     if (url != null) {
                         final int width = Integer.parseInt(tag.opts.getProperty("width", "-1"));
                         final int height = Integer.parseInt(tag.opts.getProperty("height", "-1"));
@@ -862,33 +897,33 @@ public class ContentScraper extends AbstractScraper implements Scraper {
                     }
                 }
             } catch (final NumberFormatException e) {}
-        } else if(tag.name.equalsIgnoreCase("param")) {
+        } else if(tag.tagType == TagType.param) {
             final String name = tag.opts.getProperty("name", EMPTY_STRING);
             if (name.equalsIgnoreCase("movie")) {
-                AnchorURL url = absolutePath(tag.opts.getProperty("value", EMPTY_STRING));
+                final AnchorURL url = this.absolutePath(tag.opts.getProperty("value", EMPTY_STRING));
                 if(url != null) {
-                	tag.opts.put("value", url.toNormalform(true));
-                	url.setAll(tag.opts);
-                	this.addAnchor(url);
+                    tag.opts.put("value", url.toNormalform(true));
+                    url.setAll(tag.opts);
+                    this.addAnchor(url);
                 }
             }
-        } else if (tag.name.equalsIgnoreCase("iframe")) {
-            final AnchorURL src = absolutePath(tag.opts.getProperty("src", EMPTY_STRING));
-            if(src != null) {
-            	tag.opts.put("src", src.toNormalform(true));
-            	src.setAll(tag.opts);
-            	// this.addAnchor(src); // don't add the iframe to the anchors because the webgraph should not contain such links (by definition)
-            	this.iframes.add(src);
-            	this.evaluationScores.match(Element.iframepath, src.toNormalform(true));
+        } else if (tag.tagType == TagType.iframe) {
+            final AnchorURL src = this.absolutePath(tag.opts.getProperty("src", EMPTY_STRING));
+            if (src != null) {
+                tag.opts.put("src", src.toNormalform(true));
+                src.setAll(tag.opts);
+                // this.addAnchor(src); // don't add the iframe to the anchors because the webgraph should not contain such links (by definition)
+                this.iframes.add(src);
+                this.evaluationScores.match(Element.iframepath, src.toNormalform(true));
             }
-        } else if (tag.name.equalsIgnoreCase("html")) {
+        } else if (tag.tagType == TagType.html) {
             final String lang = tag.opts.getProperty("lang", EMPTY_STRING);
-            if (!lang.isEmpty()) // fake a language meta to preserv detection from <html lang="xx" />
-                this.metas.put("dc.language",lang.substring(0,2)); // fix found entries like "hu-hu"
+            if (lang.length() >= 2) // fake a language meta to preserv detection from <html lang="xx" />
+                this.metas.put("dc.language", lang.substring(0,2)); // fix found entries like "hu-hu"
         }
 
         // fire event
-        this.fireScrapeTag0(tag.name, tag.opts);
+        this.fireScrapeTag0(tag.tagName, tag.opts);
     }
 
     /**
@@ -896,17 +931,18 @@ public class ContentScraper extends AbstractScraper implements Scraper {
      * @param tag the tag to process. Must not be null.
      */
     @Override
-    public void scrapeTag1(final Tag tag) {
-    	if(tag.ignore) {
-    		return;
-    	}
-        checkOpts(tag);
+    public void scrapePairedTag(final Tag tag) {
+        if (tag.tv == TagValency.IGNORE) {
+            return;
+        }
+
+        this.checkOpts(tag);
         // System.out.println("ScrapeTag1: tag.tagname=" + tag.tagname + ", opts=" + tag.opts.toString() + ", text=" + UTF8.String(text));
-        if (tag.name.equalsIgnoreCase("a") && tag.content.length() < 2048) {
-            String href = tag.opts.getProperty("href", EMPTY_STRING);
+        if (tag.tagType == TagType.a && tag.content.length() < 2048) {
+            final String href = tag.opts.getProperty("href", EMPTY_STRING);
             AnchorURL url;
-            if ((href.length() > 0) && ((url = absolutePath(href)) != null)) {
-                if (followDenied()) {
+            if ((href.length() > 0) && ((url = this.absolutePath(href)) != null)) {
+                if (this.followDenied()) {
                     String rel = tag.opts.getProperty("rel", EMPTY_STRING);
                     if (rel.length() == 0) rel = "nofollow"; else if (rel.indexOf("nofollow") < 0) rel += ",nofollow";
                     tag.opts.put("rel", rel);
@@ -919,135 +955,128 @@ public class ContentScraper extends AbstractScraper implements Scraper {
             this.evaluationScores.match(Element.apath, href);
         }
         final String h;
-        if (tag.name.equalsIgnoreCase("div")) {
-	       final String id = tag.opts.getProperty("id", EMPTY_STRING);
-	       this.evaluationScores.match(Element.divid, id);
-	       final String itemtype = tag.opts.getProperty("itemtype", EMPTY_STRING);
-	       if (itemtype.equals("http://data-vocabulary.org/Breadcrumb")) {
-	    	   breadcrumbs++;
-	       }
-        } else if ((tag.name.equalsIgnoreCase("h1")) && (tag.content.length() < 1024)) {
+        if (tag.tagType == TagType.div) {
+           final String id = tag.opts.getProperty("id", EMPTY_STRING);
+           this.evaluationScores.match(Element.divid, id);
+           final String itemtype = tag.opts.getProperty("itemtype", EMPTY_STRING);
+           if (itemtype.equals("http://data-vocabulary.org/Breadcrumb")) {
+               this.breadcrumbs++;
+           }
+        } else if ((tag.tagType == TagType.h1) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.headlines[0].add(h);
-        } else if((tag.name.equalsIgnoreCase("h2")) && (tag.content.length() < 1024)) {
+        } else if((tag.tagType == TagType.h2) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.headlines[1].add(h);
-        } else if ((tag.name.equalsIgnoreCase("h3")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.h3) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.headlines[2].add(h);
-        } else if ((tag.name.equalsIgnoreCase("h4")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.h4) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.headlines[3].add(h);
-        } else if ((tag.name.equalsIgnoreCase("h5")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.h5) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.headlines[4].add(h);
-        } else if ((tag.name.equalsIgnoreCase("h6")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.h6) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.headlines[5].add(h);
-        } else if ((tag.name.equalsIgnoreCase("title")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.title) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             this.titles.add(h);
             this.evaluationScores.match(Element.title, h);
-        } else if ((tag.name.equalsIgnoreCase("b")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.b) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.bold.inc(h);
-        } else if ((tag.name.equalsIgnoreCase("strong")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.strong) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.bold.inc(h);
-        } else if ((tag.name.equalsIgnoreCase("em")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.em) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.bold.inc(h);
-        } else if ((tag.name.equalsIgnoreCase("i")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.i) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.italic.inc(h);
-        } else if ((tag.name.equalsIgnoreCase("u")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.u) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.underline.inc(h);
-        } else if ((tag.name.equalsIgnoreCase("li")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.li) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.li.add(h);
-        } else if ((tag.name.equalsIgnoreCase("dt")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.dt) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.dt.add(h);
-        } else if ((tag.name.equalsIgnoreCase("dd")) && (tag.content.length() < 1024)) {
+        } else if ((tag.tagType == TagType.dd) && (tag.content.length() < 1024)) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.dd.add(h);
-        } else if (tag.name.equalsIgnoreCase("script")) {
+        } else if (tag.tagType == TagType.script) {
             final String src = tag.opts.getProperty("src", EMPTY_STRING);
             if (src.length() > 0) {
-            	AnchorURL absoluteSrc = absolutePath(src);
-            	if(absoluteSrc != null) {
-            		this.script.add(absoluteSrc);
-            	}
+                final AnchorURL absoluteSrc = this.absolutePath(src);
+                if(absoluteSrc != null) {
+                    this.script.add(absoluteSrc);
+                }
                 this.evaluationScores.match(Element.scriptpath, src);
             } else {
                 this.evaluationScores.match(Element.scriptcode, LB.matcher(new String(tag.content.getChars())).replaceAll(" "));
             }
-        } else if (tag.name.equalsIgnoreCase("article")) {
+        } else if (tag.tagType == TagType.article) {
             h = cleanLine(CharacterCoding.html2unicode(stripAllTags(tag.content.getChars())));
             if (h.length() > 0) this.articles.add(h);
-        } else if (tag.name.equalsIgnoreCase(TagName.time.name())) { // html5 tag <time datetime="2016-12-23">Event</time>
+        } else if (tag.tagType == TagType.time) { // html5 tag <time datetime="2016-12-23">Event</time>
             h = tag.opts.getProperty("datetime"); // TODO: checkOpts() also parses datetime property if in combination with schema.org itemprop=startDate/endDate
             if (h != null) { // datetime property is optional
                 try {
-                    Date startDate = ISO8601Formatter.FORMATTER.parse(h, this.timezoneOffset).getTime();
+                    final Date startDate = ISO8601Formatter.FORMATTER.parse(h, this.timezoneOffset).getTime();
                     this.startDates.add(startDate);
-                } catch (ParseException ex) { }
+                } catch (final ParseException ex) { }
             }
         }
 
         // fire event
-        this.fireScrapeTag1(tag.name, tag.opts, tag.content.getChars());
+        this.fireScrapeTag1(tag.tagName, tag.opts, tag.content.getChars());
     }
-    
-	/**
-	 * Scraping operation applied to any kind of tag opening, being either singleton
-	 * or paired tag, not restricted to tags listed in
-	 * {@link ContentScraper#linkTags0} and {@link ContentScraper#linkTags1}.
-	 */
-	@Override
-	public void scrapeAnyTagOpening(final Tag tag) {
-		if (tag != null && !tag.ignore && tag.opts != null) {
-			/*
-			 * HTML microdata can be annotated on any kind of tag, so we don't restrict this
-			 * scraping to the limited sets in linkTags0 and linkTags1
-			 */
-			this.linkedDataTypes.addAll(parseMicrodataItemType(tag.opts));
-		}
-	}
-	
-	@Override
-	public boolean shouldIgnoreTag(final Tag tag, final Tag parentTag) {
-		boolean ignore = false;
-		
-        /* First, inherit ignore property from eventual parent */
-		if(parentTag != null) {
-			ignore = parentTag.ignore;
-		}
-		
-		/* Parent is not marked as ignored : let's check the current tag */
-		if (!ignore &&
-		        this.ignoreDivClassNames != null &&
-		        tag != null &&
-		        (TagName.div.name().equals(tag.name) || TagName.nav.name().equals(tag.name))) {
-			final String classAttr = tag.opts.getProperty("class", EMPTY_STRING);
-			final Set<String> classes = ContentScraper.parseSpaceSeparatedTokens(classAttr);
-			ignore = !Collections.disjoint(this.ignoreDivClassNames, classes);
-		}
-		return ignore;
-	}
-    
+
+    /**
+     * Scraping operation applied to any kind of tag opening, being either singleton
+     * or paired tag, not restricted to tags listed in
+     * {@link ContentScraper#linkTags0} and {@link ContentScraper#linkTags1}.
+     */
+    @Override
+    public void scrapeAnyTagOpening(final Tag tag) {
+        if (tag != null && tag.tv == TagValency.EVAL && tag.opts != null) {
+            /*
+             * HTML microdata can be annotated on any kind of tag, so we don't restrict this
+             * scraping to the limited sets in linkTags0 and linkTags1
+             */
+            this.linkedDataTypes.addAll(this.parseMicrodataItemType(tag.opts));
+        }
+    }
+
+    @Override
+    public TagValency tagValency(final Tag tag, final Tag parentTag) {
+        if (parentTag != null && parentTag.tv != this.defaultValency) return parentTag.tv;
+
+        if (this.valencySwitchTagNames != null &&
+            tag != null &&
+            (TagType.div.name().equals(tag.tagName) || TagType.nav.name().equals(tag.tagName))) {
+            final String classAttr = tag.opts.getProperty("class", EMPTY_STRING);
+            final Set<String> classes = ContentScraper.parseSpaceSeparatedTokens(classAttr);
+            if (!Collections.disjoint(this.valencySwitchTagNames, classes)) return this.defaultValency.reverse();
+        }
+        return this.defaultValency;
+    }
+
     /**
      * Add an anchor to the anchors list, and trigger any eventual listener
      * @param anchor anchor to add. Must not be null.
      */
-    protected void addAnchor(AnchorURL anchor) {
-    	if(this.anchors.size() >= this.maxAnchors) {
-    		this.maxAnchorsExceeded = true;
-    	} else {
-    		this.anchors.add(anchor);
-    		this.fireAddAnchor(anchor.toNormalform(false));
-    	}
+    protected void addAnchor(final AnchorURL anchor) {
+        if(this.anchors.size() >= this.maxAnchors) {
+            this.maxAnchorsExceeded = true;
+        } else {
+            this.anchors.add(anchor);
+            this.fireAddAnchor(anchor.toNormalform(false));
+        }
     }
 
 
@@ -1059,7 +1088,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     public List<String> getTitles() {
 
         // some documents have a title tag as meta tag
-        String s = this.metas.get("title");
+        final String s = this.metas.get("title");
         if (s != null && s.length() > 0) {
             this.titles.add(s);
         }
@@ -1075,7 +1104,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         }
 
         // extract headline from file name
-        ArrayList<String> t = new ArrayList<String>();
+        final ArrayList<String> t = new ArrayList<>();
         t.addAll(this.titles);
         return t;
     }
@@ -1086,7 +1115,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     }
 
     public String[] getBold() {
-        final List<String> a = new ArrayList<String>();
+        final List<String> a = new ArrayList<>();
         final Iterator<String> i = this.bold.keys(false);
         while (i.hasNext()) a.add(i.next());
         return a.toArray(new String[a.size()]);
@@ -1099,7 +1128,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     }
 
     public String[] getItalic() {
-        final List<String> a = new ArrayList<String>();
+        final List<String> a = new ArrayList<>();
         final Iterator<String> i = this.italic.keys(false);
         while (i.hasNext()) a.add(i.next());
         return a.toArray(new String[a.size()]);
@@ -1112,7 +1141,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     }
 
     public String[] getUnderline() {
-        final List<String> a = new ArrayList<String>();
+        final List<String> a = new ArrayList<>();
         final Iterator<String> i = this.underline.keys(false);
         while (i.hasNext()) a.add(i.next());
         return a.toArray(new String[a.size()]);
@@ -1135,18 +1164,18 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     public String[] getDd() {
         return this.dd.toArray(new String[this.dd.size()]);
     }
-    
+
     public List<Date> getStartDates() {
         return this.startDates;
     }
-    
+
     public List<Date> getEndDates() {
         return this.endDates;
     }
 
     public DigestURL[] getFlash() {
         String ext;
-        ArrayList<DigestURL> f = new ArrayList<DigestURL>();
+        final ArrayList<DigestURL> f = new ArrayList<>();
         for (final DigestURL url: this.anchors) {
             ext = MultiProtocolURL.getFileExtension(url.getFileName());
             if (ext == null) continue;
@@ -1168,10 +1197,19 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     public int breadcrumbCount() {
         return this.breadcrumbs;
     }
-    
+
+
+    private final Pattern tripleN = Pattern.compile("\n\n\n");
+    private final Pattern doubleNd = Pattern.compile("\n\n- ");
+
     public String getText() {
         try {
-            return this.content.trim().toString();
+            // finalize the content
+            String text = this.content.trim().toString();
+            Matcher m;
+            while ((m = this.tripleN.matcher(text)).find()) text = m.replaceAll("\n\n");
+            while ((m = this.doubleNd.matcher(text)).find()) text = m.replaceAll("\n- ");
+            return text;
         } catch (final OutOfMemoryError e) {
             ConcurrentLog.logException(e);
             return "";
@@ -1206,14 +1244,14 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         // returns a url (String) / name (String) relation
         return this.iframes;
     }
-    
-	/**
-	 * @return URLs of linked data item types referenced from HTML content with standard
-	 *         annotations such as RDFa, microdata, microformats or JSON-LD
-	 */
-	public SizeLimitedSet<DigestURL> getLinkedDataTypes() {
-		return this.linkedDataTypes;
-	}
+
+    /**
+     * @return URLs of linked data item types referenced from HTML content with standard
+     *         annotations such as RDFa, microdata, microformats or JSON-LD
+     */
+    public SizeLimitedSet<DigestURL> getLinkedDataTypes() {
+        return this.linkedDataTypes;
+    }
 
     public Set<AnchorURL> getScript() {
         return this.script;
@@ -1226,11 +1264,11 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     public DigestURL getPublisherLink() {
         return this.publisher;
     }
-    
+
     public Map<String, DigestURL> getHreflang() {
         return this.hreflang;
     }
-    
+
     public Map<String, DigestURL> getNavigation() {
         return this.navigation;
     }
@@ -1257,38 +1295,38 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     public Map<DigestURL, IconEntry> getIcons() {
         return this.icons;
     }
-    
+
     /**
      * @return true when the limit on content size scraped has been exceeded
      */
     public boolean isContentSizeLimitExceeded() {
-		return this.contentSizeLimitExceeded;
-	}
-    
+        return this.contentSizeLimitExceeded;
+    }
+
     /**
      * @param contentSizeLimitExceeded set to true when a limit on content size scraped has been exceeded
      */
     public void setContentSizeLimitExceeded(final boolean contentSizeLimitExceeded) {
-		this.contentSizeLimitExceeded = contentSizeLimitExceeded;
-	}
-    
+        this.contentSizeLimitExceeded = contentSizeLimitExceeded;
+    }
+
     /**
      * @return true when the maxAnchors limit has been exceeded
      */
     public boolean isMaxAnchorsExceeded() {
-		return this.maxAnchorsExceeded;
-	}
-    
+        return this.maxAnchorsExceeded;
+    }
+
     /**
      * @return true when at least one limit on content size, anchors number or links number has been exceeded
      */
-	public boolean isLimitsExceeded() {
-		return this.contentSizeLimitExceeded || this.maxAnchorsExceeded || this.css.isLimitExceeded()
-				|| this.rss.isLimitExceeded() || this.embeds.isLimitExceeded() || this.metas.isLimitExceeded()
-				|| this.hreflang.isLimitExceeded() || this.navigation.isLimitExceeded() || this.script.isLimitExceeded()
-				|| this.frames.isLimitExceeded() || this.iframes.isLimitExceeded() || this.linkedDataTypes.isLimitExceeded();
-	}
-    
+    public boolean isLimitsExceeded() {
+        return this.contentSizeLimitExceeded || this.maxAnchorsExceeded || this.css.isLimitExceeded()
+                || this.rss.isLimitExceeded() || this.embeds.isLimitExceeded() || this.metas.isLimitExceeded()
+                || this.hreflang.isLimitExceeded() || this.navigation.isLimitExceeded() || this.script.isLimitExceeded()
+                || this.frames.isLimitExceeded() || this.iframes.isLimitExceeded() || this.linkedDataTypes.isLimitExceeded();
+    }
+
     /*
     DC in html example:
     <meta name="DC.title" lang="en" content="Expressing Dublin Core in HTML/XHTML meta and link elements" />
@@ -1304,7 +1342,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         if (s.indexOf("noindex",0) >= 0) return true;
         return false;
     }
-    
+
     public boolean followDenied() {
         final String s = this.metas.get("robots");
         if (s == null) return false;
@@ -1315,7 +1353,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     public List<String> getDescriptions() {
         String s = this.metas.get("description");
         if (s == null) s = this.metas.get("dc.description");
-        List<String> descriptions = new ArrayList<String>();
+        final List<String> descriptions = new ArrayList<>();
         if (s == null) return descriptions;
         descriptions.add(s);
         return descriptions;
@@ -1343,14 +1381,14 @@ public class ContentScraper extends AbstractScraper implements Scraper {
 
     private final static Pattern commaSepPattern = Pattern.compile(" |,");
     private final static Pattern semicSepPattern = Pattern.compile(" |;");
-    
+
     public Set<String> getContentLanguages() {
         // i.e. <meta name="DC.language" content="en" scheme="DCTERMS.RFC3066">
         // or <meta http-equiv="content-language" content="en">
         String s = this.metas.get("content-language");
         if (s == null) s = this.metas.get("dc.language");
         if (s == null) return null;
-        final Set<String> hs = new HashSet<String>();
+        final Set<String> hs = new HashSet<>();
         final String[] cl = commaSepPattern.split(s);
         int p;
         for (int i = 0; i < cl.length; i++) {
@@ -1370,9 +1408,32 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         if (s.isEmpty()) {
             return new String[0];
         }
-        if (s.contains(",")) return commaSepPattern.split(s);
-        if (s.contains(";")) return semicSepPattern.split(s);
-        return s.split("\\s");
+        String[] k = null;
+        if (s.contains(","))
+            k = commaSepPattern.split(s);
+        else if (s.contains(";"))
+            k = semicSepPattern.split(s);
+        else
+            k = s.split("\\s");
+
+        // trim the Strings
+        for (int i = 0; i < k.length; i++)
+            k[i] = k[i].trim();
+
+        // remove empty strings
+        int p = 0;
+        while (p < k.length) {
+            if (k[p].length() == 0) {
+                final String[] k1 = new String[k.length - 1];
+                System.arraycopy(k, 0, k1, 0, p);
+                System.arraycopy(k, p + 1, k1, p, k1.length - p);
+                k = k1;
+            } else {
+                p++;
+            }
+        }
+
+        return k;
     }
 
     public int getRefreshSeconds() {
@@ -1398,35 +1459,9 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         if (s.toLowerCase().startsWith("url=")) return s.substring(4).trim();
         return EMPTY_STRING;
     }
-    
-    public Date getDate() {
-        String content;
-        
-        // <meta name="date" content="YYYY-MM-DD..." />
-        content = this.metas.get("date");
-        if (content != null) try {return ISO8601Formatter.FORMATTER.parse(content, this.timezoneOffset).getTime();} catch (ParseException e) {}
 
-        // <meta name="DC.date.modified" content="YYYY-MM-DD" />
-        content = this.metas.get("dc.date.modified");
-        if (content != null) try {return ISO8601Formatter.FORMATTER.parse(content, this.timezoneOffset).getTime();} catch (ParseException e) {}
-        
-        // <meta name="DC.date.created" content="YYYY-MM-DD" />
-        content = this.metas.get("dc.date.created");
-        if (content != null) try {return ISO8601Formatter.FORMATTER.parse(content, this.timezoneOffset).getTime();} catch (ParseException e) {}
-        
-        // <meta name="DC.date" content="YYYY-MM-DD" />
-        content = this.metas.get("dc.date");
-        if (content != null) try {return ISO8601Formatter.FORMATTER.parse(content, this.timezoneOffset).getTime();} catch (ParseException e) {}
-        
-        // <meta name="DC:date" content="YYYY-MM-DD" />
-        content = this.metas.get("dc:date");
-        if (content != null) try {return ISO8601Formatter.FORMATTER.parse(content, this.timezoneOffset).getTime();} catch (ParseException e) {}
-        
-        // <meta http-equiv="last-modified" content="YYYY-MM-DD" />
-        content = this.metas.get("last-modified");
-        if (content != null) try {return ISO8601Formatter.FORMATTER.parse(content, this.timezoneOffset).getTime();} catch (ParseException e) {}
-        
-        return new Date();
+    public Date getDate(Date lastModified) {
+        return ContentScraperDateUtil.getDate(root, metas, timezoneOffset, startDates, lastModified);
     }
 
     // parse location
@@ -1461,7 +1496,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
 
     public double getLat() {
         if (this.lat != 0.0d) return this.lat;
-        getLon(); // parse with getLon() method which creates also the lat value
+        this.getLon(); // parse with getLon() method which creates also the lat value
         return this.lat;
     }
 
@@ -1474,7 +1509,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     }
 
     public String[] getEvaluationModelScoreNames(final String modelName) {
-        final List<String> a = new ArrayList<String>();
+        final List<String> a = new ArrayList<>();
         final ClusteredScoreMap<String> scores = this.evaluationScores.getScores(modelName);
         if (scores != null) {
             final Iterator<String> i = scores.keys(false);
@@ -1529,7 +1564,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     }
 
     public void print() {
-        for (String t: this.titles) {
+        for (final String t: this.titles) {
             System.out.println("TITLE    :" + t);
         }
         for (int i = 0; i < 4; i++) {
@@ -1548,11 +1583,11 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     @Override
     public void registerHtmlFilterEventListener(final ScraperListener listener) {
         if (listener != null) {
-        	if(listener instanceof ContentScraperListener) {
-        		this.htmlFilterEventListeners.add(ContentScraperListener.class, (ContentScraperListener)listener);
-        	} else {
-        		this.htmlFilterEventListeners.add(ScraperListener.class, listener);
-        	}
+            if(listener instanceof ContentScraperListener) {
+                this.htmlFilterEventListeners.add(ContentScraperListener.class, (ContentScraperListener)listener);
+            } else {
+                this.htmlFilterEventListeners.add(ScraperListener.class, listener);
+            }
         }
     }
 
@@ -1563,11 +1598,11 @@ public class ContentScraper extends AbstractScraper implements Scraper {
     @Override
     public void deregisterHtmlFilterEventListener(final ScraperListener listener) {
         if (listener != null) {
-        	if(listener instanceof ContentScraperListener) {
-        		this.htmlFilterEventListeners.remove(ContentScraperListener.class, (ContentScraperListener)listener);
-        	} else {
-        		this.htmlFilterEventListeners.remove(ScraperListener.class, listener);
-        	}
+            if(listener instanceof ContentScraperListener) {
+                this.htmlFilterEventListeners.remove(ContentScraperListener.class, (ContentScraperListener)listener);
+            } else {
+                this.htmlFilterEventListeners.remove(ScraperListener.class, listener);
+            }
         }
     }
 
@@ -1588,7 +1623,7 @@ public class ContentScraper extends AbstractScraper implements Scraper {
             }
         }
     }
-    
+
     /**
      * Fire addAnchor event to any listener implemening {@link ContentScraperListener} interface
      * @param url anchor url
@@ -1608,13 +1643,25 @@ public class ContentScraper extends AbstractScraper implements Scraper {
         if (page == null) throw new IOException("no content in file " + file.toString());
 
         // scrape document to look up charset
-        final ScraperInputStream htmlFilter = new ScraperInputStream(new ByteArrayInputStream(page), StandardCharsets.UTF_8.name(), new HashSet<String>(), new VocabularyScraper(), new DigestURL("http://localhost"), false, maxLinks, timezoneOffset);
+        final ScraperInputStream htmlFilter = new ScraperInputStream(
+                new ByteArrayInputStream(page),
+                StandardCharsets.UTF_8.name(),
+                new HashSet<>(), TagValency.EVAL,
+                new VocabularyScraper(),
+                new DigestURL("http://localhost"),
+                false, maxLinks, timezoneOffset);
         String charset = htmlParser.patchCharsetEncoding(htmlFilter.detectCharset());
         htmlFilter.close();
         if (charset == null) charset = Charset.defaultCharset().toString();
 
         // scrape content
-        final ContentScraper scraper = new ContentScraper(new DigestURL("http://localhost"), maxLinks, new HashSet<String>(), new VocabularyScraper(), timezoneOffset);
+        final ContentScraper scraper = new ContentScraper(
+                new DigestURL("http://localhost"),
+                maxLinks,
+                new HashSet<>(),
+                TagValency.EVAL,
+                new VocabularyScraper(),
+                timezoneOffset);
         final Writer writer = new TransformerWriter(null, null, scraper, false);
         FileUtils.copy(new ByteArrayInputStream(page), writer, Charset.forName(charset));
         writer.close();

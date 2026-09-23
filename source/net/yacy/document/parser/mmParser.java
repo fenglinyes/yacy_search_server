@@ -1,7 +1,7 @@
 /**
  *  mmParser
  *  Copyright 2010 by Marc Nause, marc.nause@gmx.de, Braunschweig, Germany
- *  First released 27.12.2010 at http://yacy.net
+ *  First released 27.12.2010 at https://yacy.net
  *
  * $LastChangedDate$
  * $LastChangedRevision$
@@ -57,18 +57,21 @@ public class mmParser extends AbstractParser implements Parser {
         this.SUPPORTED_MIME_TYPES.add("application/x-freemind");
     }
 
-    private static final ThreadLocal<SAXParser> tlSax = new ThreadLocal<SAXParser>();
-    private static SAXParser getParser() throws SAXException {
-    	SAXParser parser = tlSax.get();
-    	if (parser == null) {
-    		try {
-				parser = SAXParserFactory.newInstance().newSAXParser();
-			} catch (final ParserConfigurationException e) {
-				throw new SAXException(e.getMessage(), e);
-			}
-    		tlSax.set(parser);
-    	}
-    	return parser;
+    private static final SAXParser PARSER;
+    static {
+        try {
+            SAXParserFactory spf = SAXParserFactory.newInstance();
+            spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            PARSER = spf.newSAXParser();
+        } catch (SAXException | ParserConfigurationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+    
+    private static SAXParser getParser() {
+        return PARSER;
     }
 
     @Override

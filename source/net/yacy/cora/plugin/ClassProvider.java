@@ -1,7 +1,7 @@
 /**
  *  ClassProvider
  *  Copyright 201 by Michael Peter Christen, mc@yacy.net, Frankfurt a. M., Germany
- *  First released 13.12.2011 at http://yacy.net
+ *  First released 13.12.2011 at https://yacy.net
  *
  *  $LastChangedDate$
  *  $LastChangedRevision$
@@ -25,8 +25,10 @@
 package net.yacy.cora.plugin;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Method;
-import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 
@@ -46,12 +48,13 @@ public class ClassProvider {
             if (!path.startsWith("/")) path = "/" + path;
             URL[] urls;
             try {
-                urls = new URL[]{new URL("file", "", path)};
-                final ClassLoader cl = new URLClassLoader(urls);
+                urls = new URL[]{new URI("file", "", path).toURL()};
+                final URLClassLoader cl = new URLClassLoader(urls);
                 c = cl.loadClass(classname);
-            } catch (final MalformedURLException e) {
-            } catch (final ClassNotFoundException e) {
-            }
+                cl.close();
+            } catch (ClassNotFoundException | IOException | URISyntaxException e) {
+				e.printStackTrace();
+			}
         }
         return c;
     }

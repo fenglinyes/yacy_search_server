@@ -1,7 +1,7 @@
 /**
  *  TimeoutRequest
  *  Copyright 2010 by Michael Peter Christen, mc@yacy.net, Frankfurt a. M., Germany
- *  First released 08.10.2007 at http://yacy.net
+ *  First released 08.10.2007 at https://yacy.net
  *
  *  $LastChangedDate$
  *  $LastChangedRevision$
@@ -135,6 +135,7 @@ public class TimeoutRequest<E> {
                             return Boolean.TRUE;
                         }
                         //System.out.println("PING socket close = " + (System.currentTimeMillis() - time) + " ms (" + host + ":" + port + ")"); time = System.currentTimeMillis();
+                        socket.close();
                         return Boolean.FALSE;
                     } catch (final UnknownHostException e) {
                         //System.out.println("PING socket UnknownHostException = " + (System.currentTimeMillis() - time) + " ms (" + host + ":" + port + ")"); time = System.currentTimeMillis();

@@ -1,7 +1,7 @@
 /**
  *  SolrSelectServlet
  *  Copyright 2012 by Michael Peter Christen
- *  First released 23.08.2012 at http://yacy.net
+ *  First released 23.08.2012 at https://yacy.net
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -45,12 +45,10 @@ import net.yacy.cora.federate.solr.responsewriter.EnhancedXMLResponseWriter;
 import net.yacy.cora.federate.solr.responsewriter.GrepHTMLResponseWriter;
 import net.yacy.cora.federate.solr.responsewriter.HTMLResponseWriter;
 import net.yacy.cora.federate.solr.responsewriter.OpensearchResponseWriter;
-import net.yacy.cora.federate.solr.responsewriter.SnapshotImagesReponseWriter;
 import net.yacy.cora.federate.solr.responsewriter.SolrjResponseWriter;
 import net.yacy.cora.federate.solr.responsewriter.YJsonResponseWriter;
 import net.yacy.cora.protocol.RequestHeader;
 import net.yacy.cora.util.ConcurrentLog;
-import net.yacy.data.UserDB;
 import net.yacy.search.Switchboard;
 import net.yacy.search.SwitchboardConstants;
 import net.yacy.search.query.AccessTracker;
@@ -60,7 +58,7 @@ import net.yacy.search.query.SearchEvent;
 import net.yacy.search.schema.CollectionSchema;
 import net.yacy.search.schema.WebgraphSchema;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocumentList;
 import org.apache.solr.common.SolrException;
@@ -79,7 +77,7 @@ import org.apache.solr.response.QueryResponseWriter;
 import org.apache.solr.response.RawResponseWriter;
 import org.apache.solr.response.ResultContext;
 import org.apache.solr.response.SolrQueryResponse;
-import org.apache.solr.response.XSLTResponseWriter;
+import org.apache.solr.scripting.xslt.XSLTResponseWriter;
 import org.apache.solr.search.DocList;
 import org.apache.solr.servlet.SolrRequestParsers;
 import org.apache.solr.servlet.cache.HttpCacheHeaderUtil;
@@ -109,7 +107,6 @@ public class SolrSelectServlet extends HttpServlet {
         RESPONSE_WRITER.put("xslt", xsltWriter); // try i.e. http://localhost:8090/solr/select?q=*:*&start=0&rows=10&wt=xslt&tr=json.xsl
         RESPONSE_WRITER.put("exml", new EnhancedXMLResponseWriter());
         RESPONSE_WRITER.put("html", new HTMLResponseWriter());
-        RESPONSE_WRITER.put("snapshots", new SnapshotImagesReponseWriter());
         RESPONSE_WRITER.put("grephtml", new GrepHTMLResponseWriter());
         RESPONSE_WRITER.put("rss", opensearchResponseWriter); //try http://localhost:8090/solr/select?wt=rss&q=olympia&hl=true&hl.fl=text_t,h1,h2
         RESPONSE_WRITER.put("opensearch", opensearchResponseWriter); //try http://localhost:8090/solr/select?wt=rss&q=olympia&hl=true&hl.fl=text_t,h1,h2
@@ -132,7 +129,7 @@ public class SolrSelectServlet extends HttpServlet {
 
             Switchboard sb = Switchboard.getSwitchboard();
             // TODO: isUserInRole needs a login to jetty container (not done automatically on admin from localhost)
-            boolean authenticated = hrequest.isUserInRole(UserDB.AccessRight.ADMIN_RIGHT.toString());
+            boolean authenticated = hrequest.isUserInRole(SwitchboardConstants.ADMIN_ACCOUNT_ROLE);
 
             // count remote searches if this was part of a p2p search
             if (mmsp.getMap().containsKey("partitions")) {
@@ -395,11 +392,37 @@ public class SolrSelectServlet extends HttpServlet {
         }
     }
 
-    private void sendError(HttpServletResponse hresponse, Throwable ex) throws IOException {
+    static void sendError(final HttpServletResponse hresponse, final Throwable ex)
+            throws IOException, ServletException {
+        /*
+         * A response writer can fail after Jetty has committed the headers (most
+         * commonly when the client disconnects while a result is being streamed).
+         * Calling sendError() at that point throws IllegalStateException:
+         * COMMITTED and hides the useful original failure from the container.
+         */
+        if (hresponse.isCommitted()) {
+            rethrow(ex);
+        }
         int code = (ex instanceof SolrException) ? ((SolrException) ex).code() : 500;
         StringWriter sw = new StringWriter();
         ex.printStackTrace(new PrintWriter(sw));
         hresponse.sendError((code < 100) ? 500 : code, ex.getMessage() + "\n\n" + sw.toString());
+    }
+
+    private static void rethrow(final Throwable failure) throws IOException, ServletException {
+        if (failure instanceof IOException) {
+            throw (IOException) failure;
+        }
+        if (failure instanceof ServletException) {
+            throw (ServletException) failure;
+        }
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) {
+            throw (Error) failure;
+        }
+        throw new ServletException(failure);
     }
 
 }

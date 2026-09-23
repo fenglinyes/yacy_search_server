@@ -1,7 +1,7 @@
 /**
  *  BEncodedHeapShard
  *  Copyright 2011 by Michael Peter Christen, mc@yacy.net, Frankfurt am Main, Germany
- *  First released 16.12.2011 at http://yacy.net
+ *  First released 16.12.2011 at https://yacy.net
  *
  *  $LastChangedDate: 2011-04-14 00:04:23 +0200 (Do, 14 Apr 2011) $
  *  $LastChangedRevision: 7653 $
@@ -146,7 +146,7 @@ public class BEncodedHeapShard extends AbstractMapStore implements MapStore {
         // open all tables of this shard
         for (final String element : tablefile) {
             if (this.shardMethod.isShardPart(element)) {
-                ConcurrentLog.info("BEncodedHeapShard", "opening partial shard " + element);
+                ConcurrentLog.info("KELONDRO", "BEncodedHeapShard: opening partial shard " + element);
                 MapStore bag = openBag(element);
                 this.shard.put(this.shardMethod.getShardName(element), bag);
             }

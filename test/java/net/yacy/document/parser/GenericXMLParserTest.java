@@ -279,7 +279,7 @@ public class GenericXMLParserTest {
 				+ "<html xmlns=\"http://www.w3.org/1999/xhtml\">" + "<head>"
 				+ "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />"
 				+ "<title>XHTML attributes URLs test</title>" + "</head>" + "<body>"
-				+ "Here are YaCy<a href=\"http://yacy.net\">home page</a> and <a href=\"https://community.searchlab.eu\">International Forum</a>."
+				+ "Here are YaCy<a href=\"https://yacy.net\">home page</a> and <a href=\"https://community.searchlab.eu\">International Forum</a>."
 				+ "And this is a relative link to a <a href=\"/document.html\">sub document</a>." + "</body>"
 				+ "</html>";
 
@@ -295,7 +295,7 @@ public class GenericXMLParserTest {
 			assertNotNull(detectedAnchors);
 			assertEquals(3, detectedAnchors.size());
 			assertTrue(detectedAnchors.contains(new AnchorURL("http://www.w3.org/1999/xhtml")));
-			assertTrue(detectedAnchors.contains(new AnchorURL("http://yacy.net")));
+			assertTrue(detectedAnchors.contains(new AnchorURL("https://yacy.net")));
 			assertTrue(detectedAnchors.contains(new AnchorURL("https://community.searchlab.eu")));
 		} finally {
 			inStream.close();
@@ -315,7 +315,7 @@ public class GenericXMLParserTest {
 				+ "<html xmlns=\"http://www.w3.org/1999/xhtml\">" + "<head>"
 				+ "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />"
 				+ "<title>XHTML content URLs test</title>" + "</head>" + "<body>" + "Here are some YaCy links:" + "<dl>"
-				+ "<dt>Home page</dt>" + "<dd>http://yacy.net</dd>" + "<dt>International Forum</dt>"
+				+ "<dt>Home page</dt>" + "<dd>https://yacy.net</dd>" + "<dt>International Forum</dt>"
 				+ "<dd>https://community.searchlab.eu</dd>" + "</dl>"
 				+ "And this is a mention to a relative link : /document.html " + "</body>" + "</html>";
 
@@ -331,7 +331,7 @@ public class GenericXMLParserTest {
 			assertNotNull(detectedAnchors);
 			assertEquals(3, detectedAnchors.size());
 			assertTrue(detectedAnchors.contains(new AnchorURL("http://www.w3.org/1999/xhtml")));
-			assertTrue(detectedAnchors.contains(new AnchorURL("http://yacy.net")));
+			assertTrue(detectedAnchors.contains(new AnchorURL("https://yacy.net")));
 			assertTrue(detectedAnchors.contains(new AnchorURL("https://community.searchlab.eu")));
 		} finally {
 			inStream.close();
@@ -373,7 +373,7 @@ public class GenericXMLParserTest {
 				+ "<html xmlns=\"http://www.w3.org/1999/xhtml\">" + "<head>"
 				+ "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />"
 				+ "<title>XHTML content URLs test</title>" + "</head>" + "<body>" + "<p>Here are some YaCy URLs: "
-				+ "Home page : http://yacy.net - International Forum : "
+				+ "Home page : https://yacy.net - International Forum : "
 				+ "https://community.searchlab.eu "
 				+ "and this is a mention to a relative URL : /document.html</p>"
 				+ "<p>Here are YaCy<a href=\"http://mantis.tokeek.de\">bug tracker</a> and <a href=\"https://wiki.yacy.net/index.php/\">Wiki</a>."
@@ -386,7 +386,8 @@ public class GenericXMLParserTest {
 		final String charsetFromHttpHeader = HeaderFramework.getCharacterEncoding(contentTypeHeader);
 		final DigestURL location = new DigestURL("http://localhost/testfile.xml");
 		try {
-			final Document[] documents = this.parser.parseWithLimits(location, contentTypeHeader, charsetFromHttpHeader, new VocabularyScraper(), 0, inStream, Integer.MAX_VALUE, Long.MAX_VALUE);
+			final Document[] documents = this.parser.parseWithLimits(location, contentTypeHeader, charsetFromHttpHeader,
+					new VocabularyScraper(), 0, inStream, Integer.MAX_VALUE, Long.MAX_VALUE, null);
 			assertEquals(1, documents.length);
 			assertFalse(documents[0].isPartiallyParsed());
 
@@ -396,9 +397,8 @@ public class GenericXMLParserTest {
 			assertNotNull(detectedAnchors);
 			assertEquals(5, detectedAnchors.size());
 			assertTrue(detectedAnchors.contains(new AnchorURL("http://www.w3.org/1999/xhtml")));
-			assertTrue(detectedAnchors.contains(new AnchorURL("http://yacy.net")));
+			assertTrue(detectedAnchors.contains(new AnchorURL("https://yacy.net")));
 			assertTrue(detectedAnchors.contains(new AnchorURL("https://community.searchlab.eu")));
-			assertTrue(detectedAnchors.contains(new AnchorURL("http://mantis.tokeek.de")));
 			assertTrue(detectedAnchors.contains(new AnchorURL("https://wiki.yacy.net/index.php/")));
 		} finally {
 			inStream.close();
@@ -408,7 +408,7 @@ public class GenericXMLParserTest {
 		inStream = new ByteArrayInputStream(xhtml.getBytes(StandardCharsets.UTF_8.name()));
 		try {
 			final Document[] documents = this.parser.parseWithLimits(location, contentTypeHeader, charsetFromHttpHeader,
-					new VocabularyScraper(), 0, inStream, 2, Long.MAX_VALUE);
+					new VocabularyScraper(), 0, inStream, 2, Long.MAX_VALUE, null);
 			assertEquals(1, documents.length);
 			assertTrue(documents[0].isPartiallyParsed());
 
@@ -419,7 +419,7 @@ public class GenericXMLParserTest {
 			assertNotNull(detectedAnchors);
 			assertEquals(2, detectedAnchors.size());
 			assertTrue(detectedAnchors.contains(new AnchorURL("http://www.w3.org/1999/xhtml")));
-			assertTrue(detectedAnchors.contains(new AnchorURL("http://yacy.net")));
+			assertTrue(detectedAnchors.contains(new AnchorURL("https://yacy.net")));
 		} finally {
 			inStream.close();
 		}
@@ -433,7 +433,7 @@ public class GenericXMLParserTest {
 				.append("<title>XHTML content URLs test</title>")
 				.append("</head>")
 				.append("<body><p>Here are some YaCy URLs: ")
-				.append("Home page : http://yacy.net - International Forum : ")
+				.append("Home page : https://yacy.net - International Forum : ")
 				.append("https://community.searchlab.eu ")
 				.append("and this is a mention to a relative URL : /document.html</p>");
 
@@ -448,7 +448,8 @@ public class GenericXMLParserTest {
 			.append("</body></html>");
 		inStream = new ByteArrayInputStream(xhtmlBuilder.toString().getBytes(StandardCharsets.UTF_8.name()));
 		try {
-			final Document[] documents = this.parser.parseWithLimits(location, contentTypeHeader, charsetFromHttpHeader, new VocabularyScraper(), 0, inStream, Integer.MAX_VALUE, firstBytes);
+			final Document[] documents = this.parser.parseWithLimits(location, contentTypeHeader, charsetFromHttpHeader,
+					new VocabularyScraper(), 0, inStream, Integer.MAX_VALUE, firstBytes, null);
 			assertEquals(1, documents.length);
 			assertTrue(documents[0].isPartiallyParsed());
 
@@ -459,7 +460,7 @@ public class GenericXMLParserTest {
 			assertNotNull(detectedAnchors);
 			assertEquals(3, detectedAnchors.size());
 			assertTrue(detectedAnchors.contains(new AnchorURL("http://www.w3.org/1999/xhtml")));
-			assertTrue(detectedAnchors.contains(new AnchorURL("http://yacy.net")));
+			assertTrue(detectedAnchors.contains(new AnchorURL("https://yacy.net")));
 			assertTrue(detectedAnchors.contains(new AnchorURL("https://community.searchlab.eu")));
 		} finally {
 			inStream.close();

@@ -20,15 +20,39 @@ else
     ID="id"
 fi
 
+# if java executable not found using 'which', let's try 'command'
+if [ ! -x "$JAVA" ]
+then
+	JAVA="`command -v java`"
+fi
+
 if [ ! -x "$JAVA" ]
 then
     echo "The java command is not executable."
-    echo "Either you have not installed java or it is not in your PATH"
+    echo "Either you have not installed java or it is not in your PATH."
+    echo "You can also set a path to java manually, in \$JAVA option of $0 script."
     #Cron supports setting the path in 
     #echo "Has this script been invoked by CRON?"
-    #echo "if so, please set PATH in the crontab, or set the correct path in the variable in this script."
+    #echo "if so, please set PATH in the crontab, by running 'crontab -e' and editing the path to java"
+	#echo "or set the correct path in the variable in this script."
     exit 1
 fi
+
+JAVA_SPECIFICATION_VERSION="`"$JAVA" -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1`"
+JAVA_MAJOR_VERSION="${JAVA_SPECIFICATION_VERSION#1.}"
+JAVA_MAJOR_VERSION="${JAVA_MAJOR_VERSION%%.*}"
+case "$JAVA_MAJOR_VERSION" in
+    ''|*[!0-9]*)
+        echo "Unable to determine the Java version reported by $JAVA."
+        exit 1
+        ;;
+esac
+if [ "$JAVA_MAJOR_VERSION" -lt 17 ]
+then
+    echo "Java 17 or newer is required to run YaCy (found Java $JAVA_SPECIFICATION_VERSION)."
+    exit 1
+fi
+
 
 usage() {
     cat - <<USAGE
@@ -143,7 +167,7 @@ done
 
 if [ ! -z "$parameter" ] && [ "$STARTUP" -eq 1 -o "$GUI" -eq 1 ]; then
     # The data path is explicitely provided with startup or gui option
-    YACY_PARENT_DATA_PATH="`echo $parameter | cut -d' ' -f1`"
+    YACY_PARENT_DATA_PATH=$parameter
     if [ ! "`echo $YACY_PARENT_DATA_PATH | cut -c1`" = "/" ]; then
         # Parent DATA path is relative to the user home
         YACY_PARENT_DATA_PATH="$HOME/$YACY_PARENT_DATA_PATH"
@@ -169,9 +193,6 @@ then
     # JAVA_ARGS="$JAVA_ARGS -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC"
 elif [ $OS = "SunOS" ]
 then
-    # the UseConcMarkSweepGC option caused a full CPU usage - bug on Darwin.
-    # It was reported that the same option causes good performance on solaris.
-    JAVA_ARGS="$JAVA_ARGS -XX:+UseConcMarkSweepGC -XX:+CMSIncrementalMode"
     ENABLEHUGEPAGES=1
 fi 
 
@@ -184,30 +205,30 @@ fi
 #turn on MMap for Solr if OS is a 64bit OS
 if [ -n "`uname -m | grep 64`" ]; then JAVA_ARGS="$JAVA_ARGS -Dsolr.directoryFactory=solr.MMapDirectoryFactory"; fi
 
-if [ -f $CONFIGFILE ]
+if [ -f "$CONFIGFILE" ]
 then
     # startup memory
 
     if [ -z "$YACY_JAVASTART_XMX" ]
     then
         # When YACY_JAVASTART_XMX is not set or empty:
-        # Read from $CONFIGFILE
-        j="`grep javastart_Xmx $CONFIGFILE | sed 's/^[^=]*=//'`";
+        # Read from $CONFIGFILE (strip comment lines first to avoid matching #javastart_Xmx=...)
+        j="`grep -v '^\s*#' "$CONFIGFILE" | grep 'javastart_Xmx' | sed 's/^[^=]*=//'`";
         if [ -n "$j" ]; then JAVA_ARGS="-$j $JAVA_ARGS"; fi;
     else
         # use the YACY_JAVASTART_XMX variable
         JAVA_ARGS="-$YACY_JAVASTART_XMX $JAVA_ARGS"
     fi
 
-    # Priority
-    j="`grep javastart_priority $CONFIGFILE | sed 's/^[^=]*=//'`";
+    # Priority (strip comment lines first)
+    j="`grep -v '^\s*#' "$CONFIGFILE" | grep 'javastart_priority' | sed 's/^[^=]*=//'`";
 
     if [ -n "$j" ]; then JAVA="nice -n $j $JAVA"; fi;
 
-    PORT="`grep ^port= $CONFIGFILE | sed 's/^[^=]*=//'`";
+    PORT="`grep -v '^\s*#' "$CONFIGFILE" | grep '^port=' | sed 's/^[^=]*=//'`";
     if [ -z "$PORT" ]; then PORT="8090"; fi;
     
-#    for i in `grep javastart $CONFIGFILE`;do
+#    for i in `grep javastart "$CONFIGFILE"`;do
 #        i="${i#javastart_*=}";
 #        JAVA_ARGS="-$i $JAVA_ARGS";
 #    done
@@ -228,7 +249,7 @@ cmdline="$JAVA $JAVA_ARGS -classpath $CLASSPATH net.yacy.yacy";
 
 if [ $STARTUP -eq 1 ] #startup
 then
-    cmdline="$cmdline -startup $parameter"
+    cmdline="$cmdline -startup \"$parameter\""
 elif [ $GUI -eq 1 ];then #gui
     cmdline="$cmdline -gui $parameter"
 fi
@@ -247,7 +268,7 @@ if [ $PRINTONLY -eq 1 ];then
 else
     echo "****************** YaCy Web Crawler/Indexer & Search Engine *******************"
     echo "**** (C) by Michael Peter Christen, usage granted under the GPL Version 2  ****"
-    echo "****   USE AT YOUR OWN RISK! Project home and releases: http://yacy.net/   ****"
+    echo "****   USE AT YOUR OWN RISK! Project home and releases: https://yacy.net/  ****"
     echo "**  LOG of       YaCy: DATA/LOG/yacy00.log (and yacy<xx>.log)                **"
     echo "**  STOP         YaCy: execute stopYACY.sh and wait some seconds             **"
     echo "**  GET HELP for YaCy: join our community at https://community.searchlab.eu  **"

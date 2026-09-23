@@ -2,7 +2,7 @@
  *  AccessTracker
  *  an interface for Adaptive Replacement Caches
  *  Copyright 2009 by Michael Peter Christen, mc@yacy.net, Frankfurt a. M., Germany
- *  First released 29.08.2009 at http://yacy.net
+ *  First released 29.08.2009 at https://yacy.net
  *
  * $LastChangedDate$
  * $LastChangedRevision$
@@ -191,12 +191,16 @@ public class AccessTracker {
     public static void dumpLog() {
         lastLogDump = System.currentTimeMillis();
     	localCount += localSearches.size();
-        while (!localSearches.isEmpty()) {
-            addToDump(localSearches.removeFirst(), 0);
-        }
+    	synchronized (localSearches) {
+    	    while (!localSearches.isEmpty()) {
+                addToDump(localSearches.removeFirst(), 0);
+            }
+    	}
         remoteCount += remoteSearches.size();
-        while (!remoteSearches.isEmpty()) {
-            addToDump(remoteSearches.removeFirst(), 0);
+        synchronized (remoteSearches) {
+            while (!remoteSearches.isEmpty()) {
+                addToDump(remoteSearches.removeFirst(), 0);
+            }
         }
         Thread t = new Thread("AccessTracker.dumpLog") {
             @Override

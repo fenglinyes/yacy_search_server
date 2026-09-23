@@ -1,0 +1,2245 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "DTD/xhtml1-transitional.dtd">
+<!-- This page is only XHTML 1.0 Transitional because target is being used in a links -->
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <title>YaCy '#[clientname]#': LLM Selection</title>
+    #%env/templates/metas.template%#
+  </head>
+  <body id="IndexControl" data-llm-service="#[llm_service]#" data-llm-hoststub="#[llm_hoststub]#" data-llm-apikey="#[llm_apikey]#" data-model-capabilities="#[model_capabilities]#" data-service-num-ctx="#[service_num_ctx_json]#">
+    #%env/templates/header.template%#
+    #%env/templates/submenuAI.template%#
+    <script>
+      let availableModels = [];
+
+      const downloadActivities = new Map();
+      const testActivities = new Map();
+      let activeDownloadCount = 0;
+      const beforeUnloadHandler = event => {
+        const hasActiveTests = hasRunningCapabilityTests();
+        const hasActiveDownloads = activeDownloadCount > 0;
+        if (!hasActiveTests && !hasActiveDownloads) {
+          return;
+        }
+        event.preventDefault();
+        event.returnValue = hasActiveTests
+          ? "Production model tests are still running. Please wait until they finish."
+          : "Model downloads are still running. Please wait until they finish.";
+      };
+      // Localization-friendly test strings and hints (translate/tune as needed)
+      const TEST_STRINGS = {
+        toolingEndpointPath: "/v1/chat/completions", // Endpoint used to probe tooling capability on OpenAI-compatible APIs
+        thinkingUserMessage: "Hello", // User prompt for thinking capability test
+        toolingSystemMessage: "You are a home assistant.", // System prompt for tooling capability test
+        toolingUserMessage: "Switch on the light", // User prompt for tooling capability test
+        visionSystemMessage: "you read out images", // System prompt for vision capability test
+        visionUserMessage: "what is in the image?", // User prompt for vision capability test
+        visionExpectedText: "42", // Expected mention in LLM response when reading the test image
+        visionTestImagePath: "env/grafics/llmtest.png", // Image used for the vision capability test
+        formatSystemMessage: "You are a mood classifier. Identify the mood of the request."
+      };
+
+      const FORMAT_TEST_CASES = [
+        { text: "I hate programming", expectedMood: "angry" },
+        { text: "I love programming", expectedMood: "happy" },
+        { text: "Wait, that worked perfectly?", expectedMood: "surprised" }
+      ];
+
+      const FORMAT_TEST_SCHEMA = {
+        title: "Classifier",
+        type: "object",
+        properties: {
+          mood: { type: "literal", enum: ["surprised", "angry", "happy"] }
+        },
+        required: ["mood"]
+      };
+
+      const PRODUCTION_MODEL_TOTAL_COLUMNS = 18;
+      const PRODUCTION_MODEL_MODEL_COLUMN_INDEX = 1;
+      const PRODUCTION_MODEL_MAX_TOKENS_COLUMN_INDEX = 4;
+      const PRODUCTION_MODEL_USAGE_COLUMN_START = 5;
+      const PRODUCTION_MODEL_USAGE_COLUMN_END = 12; // including
+      const PRODUCTION_MODEL_FEATURE_COLUMN_START = 13;
+      const PRODUCTION_MODEL_FEATURE_COLUMN_END = 16; // including
+      const PRODUCTION_MODEL_ACTION_COLUMN_INDEX = PRODUCTION_MODEL_TOTAL_COLUMNS - 1;
+      const PRODUCTION_MODEL_THINKING_COLUMN_INDEX = PRODUCTION_MODEL_FEATURE_COLUMN_START;
+      const PRODUCTION_MODEL_TOOLING_COLUMN_INDEX = PRODUCTION_MODEL_FEATURE_COLUMN_START + 1;
+      const PRODUCTION_MODEL_VISION_COLUMN_INDEX = PRODUCTION_MODEL_FEATURE_COLUMN_START + 2;
+      const PRODUCTION_MODEL_FORMAT_COLUMN_INDEX = PRODUCTION_MODEL_FEATURE_COLUMN_START + 3;
+      const PRODUCTION_MODEL_ENABLED_USAGE_COLUMNS = new Set([
+        6,  // chat
+        11, // tldr
+        12  // log-report
+      ]);
+      const PRODUCTION_MODEL_COLUMN_NAMES = [
+        "service",
+        "model",
+        "hoststub",
+        "api_key",
+        "max_tokens",
+        
+        "search",
+        "chat",
+        "translation",
+        "classification",
+        "query",
+        "qapairs",
+        "tldr",
+        "logreport",
+
+        "thinking",
+        "tooling",
+        "vision",
+        "format"
+      ];
+      const PRODUCTION_MODEL_SUBMIT_URL = "LLMSelection_p.html";
+      const TOOLING_EXPECTED_FUNCTION_NAME = "lightswitch";
+      let cachedVisionTestImageBase64 = null;
+      let cachedVisionTestImagePromise = null;
+      let persistedModelCapabilities = {};
+
+      const RECOMMENDED_MODELS = [
+        ["qwen3:4b-instruct-2507-q4_K_M",                     " 7.70",  "3GB", "a good 4B model", "Alibaba", "apache-2.0"],
+        ["frob/qwen3.5-instruct:4b",                          " 8.52",  "4GB", "good model for its size, non-thinking version", "Alibaba", "apache-2.0"],
+        ["hf.co/InternScience/Agents-A1-4B-Q8_0-GGUF:Q8_0",   "24.34",  "6GB", "fine-tuned version of qwen3.5-instruct:4b; extreme benchmark gains using teacher model", "Intern Science, Shanghai Artificial Intelligence Laboratory", "apache-2.0"],
+        //["qwen3.5:9b-q4_K_M",                                 "18.37",  "7GB", "multimodal, outstanding for its size, long-context 256K Tokens, strong instruction following model", "Alibaba", "apache-2.0"],
+        ["gemma4:12b-it-qat",                                 "42.13",  "8GB", "Very mighty, very small model from Google", "Google", "apache-2.0"],
+        ["ministral-3:14b-instruct-2512-q4_K_M",              " 8.55", "10GB", "European model, strong multilangual, has vision, is agentic", "mistral.ai", "apache-2.0"],
+        ["hf.co/mradermacher/Ling-mini-2.0-GGUF:Q4_K_M",      "20.00", "10GB", "very fast 16B MoE model with 1.4B activated parameters per expert", "InclusionAI", "mit"],
+        ["olmo-3.1:32b-instruct-q4_K_M",                      "10.25", "19GB", "open and accessible training data, open-source training code", "allenai.org", "apache-2.0"],
+        ["qwen3.8:27b-mtp-q4_K_M",                            "57.42", "17GB", "Exceptional good 27B model with vision, ranking above GPT-4-turbo, GPT-4.1-nano, GPT-o1, GPT-4o-mini", "Alibaba", "apache-2.0"],
+        ["muse-glimmer:30b-q4_K_M-dflash",                    "55.55", "21GB", "Agent-first model from Meta, tuned for tool use, long tasks, and failure recovery", "Meta", "apache-2.0"],
+        ["qwen3.6:35b-a3b-mtp-q4_K_M",                        "45.91", "22GB", "Almost as good as the 27B model, but much faster", "Alibaba", "apache-2.0"]
+      ];
+	  
+      const MODEL_TABLE_HEADERS = ["Model", "Ranking", "Size", "Description", "Provider", "License", "Actions"];
+      const AVAILABLE_MODEL_TABLE_HEADERS = ["Model", "Ranking", "Size", "Description", "Provider", "License", "Thinking", "Tooling", "Vision", "Format", "Actions"];
+      const RECOMMENDED_MODEL_MAP = new Map(
+        RECOMMENDED_MODELS.map(([name, ranking, size, description, provider, license]) => [
+          name,
+          { ranking, size, description, provider, license }
+        ])
+      );
+
+
+      /***
+       ***  API functions to access Ollama or OpenAI endpoints (list/load/delete models)
+       ***
+       ***  All endpoint calls are routed through the YaCy-internal admin passthrough
+       ***  proxy (see LLMAdminProxyServlet.java): instead of calling the LLM endpoint
+       ***  directly, the browser calls the same API path on YaCy itself (same-origin)
+       ***  and passes the target endpoint as hoststub parameter. This keeps endpoints
+       ***  reachable which are only visible from the YaCy server (remote YaCy
+       ***  installations), avoids CORS/mixed-content issues and lets YaCy inject the
+       ***  stored api_key server-side. The proxy requires admin authentication, which
+       ***  the browser already holds on this page.
+       ***/
+
+      function proxyUrl(hoststub, path) {
+        const target = (hoststub || "").trim().replace(/\/+$/, "");
+        return `${path}?hoststub=${encodeURIComponent(target)}`;
+      }
+
+      async function fetchJsonOrThrow(url, options = {}) {
+        const response = await fetch(url, options);
+        if (response.status !== 200) {
+          const error = new Error("Model fetch failed");
+          error.status = response.status;
+          throw error;
+        }
+        return response.json();
+      }
+
+      function modelCapabilityKey(service, hoststub, modelName) {
+        return [
+          (service || "").trim(),
+          (hoststub || "").trim().replace(/\/+$/, ""),
+          (modelName || "").trim()
+        ].join("|");
+      }
+
+      function readPersistedModelCapabilities() {
+        const raw = document.body ? document.body.getAttribute("data-model-capabilities") : "{}";
+        if (!raw) return {};
+        try {
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === "object" ? parsed : {};
+        } catch (err) {
+          console.warn("Failed to parse persisted model capabilities", err);
+          return {};
+        }
+      }
+
+      function normalizeCapabilityStatus(value) {
+        if (value === true) return "supported";
+        if (value === false) return "unsupported";
+        const text = typeof value === "string" ? value.trim().toLowerCase() : "";
+        if (text === "supported" || text === "unsupported" || text === "unknown") return text;
+        return "unknown";
+      }
+
+      function ensureCapabilityEntry(service, hoststub, modelName) {
+        const key = modelCapabilityKey(service, hoststub, modelName);
+        if (!key.trim()) return null;
+        if (!persistedModelCapabilities[key] || typeof persistedModelCapabilities[key] !== "object") {
+            persistedModelCapabilities[key] = {};
+        }
+        persistedModelCapabilities[key].thinking = normalizeCapabilityStatus(persistedModelCapabilities[key].thinking);
+        persistedModelCapabilities[key].tooling = normalizeCapabilityStatus(persistedModelCapabilities[key].tooling);
+        persistedModelCapabilities[key].vision = normalizeCapabilityStatus(persistedModelCapabilities[key].vision);
+        persistedModelCapabilities[key].format = normalizeCapabilityStatus(persistedModelCapabilities[key].format);
+        return persistedModelCapabilities[key];
+      }
+
+      function getPersistedCapabilitiesForModel(service, hoststub, modelName) {
+        const key = modelCapabilityKey(service, hoststub, modelName);
+        const entry = key ? persistedModelCapabilities[key] : null;
+        if (!entry || typeof entry !== "object") {
+          return { thinking: "unknown", tooling: "unknown", vision: "unknown", format: "unknown" };
+        }
+        return {
+          thinking: normalizeCapabilityStatus(entry.thinking),
+          tooling: normalizeCapabilityStatus(entry.tooling),
+          vision: normalizeCapabilityStatus(entry.vision),
+          format: normalizeCapabilityStatus(entry.format)
+        };
+      }
+
+      function setPersistedCapability(service, hoststub, modelName, capabilityName, status) {
+        const entry = ensureCapabilityEntry(service, hoststub, modelName);
+        if (!entry || !capabilityName) return;
+        entry[capabilityName] = normalizeCapabilityStatus(status);
+      }
+
+      function capabilityStatusLabel(status) {
+        switch (normalizeCapabilityStatus(status)) {
+          case "supported":
+            return "yes";
+          case "unsupported":
+            return "no";
+          default:
+            return "?";
+        }
+      }
+
+      function capabilityLabelToBoolean(label) {
+        return (label || "").trim().toLowerCase() === "yes";
+      }
+
+      function isCapabilityUnsupportedError(error) {
+        const status = error && typeof error.status === "number" ? error.status : null;
+        return status === 400 || status === 404 || status === 415 || status === 422;
+      }
+
+      async function deleteOllamaModel(hoststub, modelName) {
+        const response = await fetch(proxyUrl(hoststub, "/api/delete"), {
+          method: "DELETE",
+          headers: {"Accept": "application/json", "Content-Type": "application/json"},
+          body: JSON.stringify({ model: modelName })
+        });
+        if (response.status !== 200) {
+          const error = new Error(`Failed to delete model ${modelName}`);
+          error.status = response.status;
+          throw error;
+        }
+      }
+
+      async function downloadOllamaModel(hoststub, modelName, onProgress) {
+        // stream: true keeps bytes flowing so no idle timeout in the proxy chain
+        // kills the connection during long pulls; ollama continues a pull
+        // server-side even if this connection drops, so leaving the page is safe
+        const response = await fetch(proxyUrl(hoststub, "/api/pull"), {
+          method: "POST",
+          headers: {"Accept": "application/x-ndjson", "Content-Type": "application/json"},
+          body: JSON.stringify({ model: modelName, stream: true })
+        });
+        if (response.status !== 200) {
+          const error = new Error(`Failed to download model ${modelName}`);
+          error.status = response.status;
+          throw error;
+        }
+        // the body is NDJSON: one progress object per line; errors arrive
+        // mid-stream as {"error": ...} lines even though the HTTP status is 200
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = "";
+        let lastPayload = null;
+        const consumeLine = (line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          let payload = null;
+          try {
+            payload = JSON.parse(trimmed);
+          } catch (parseError) {
+            return; // ignore malformed progress lines
+          }
+          if (payload.error) {
+            const error = new Error(payload.error);
+            error.status = response.status;
+            error.payload = payload;
+            throw error;
+          }
+          lastPayload = payload;
+          if (onProgress) onProgress(payload);
+        };
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffered += decoder.decode(value, { stream: true });
+          const lines = buffered.split("\n");
+          buffered = lines.pop();
+          for (const line of lines) consumeLine(line);
+        }
+        buffered += decoder.decode();
+        consumeLine(buffered);
+        return lastPayload;
+      }
+
+      async function requestModelsForService(service, hoststub) {
+        const url = service === "OLLAMA" ? proxyUrl(hoststub, "/api/tags") : proxyUrl(hoststub, "/v1/models");
+        const options = {};
+        const apikeyEl = document.getElementById("apikey");
+        const apikey = apikeyEl ? apikeyEl.value.trim() : "";
+        if (apikey) {
+          // for endpoints which are not saved yet the proxy cannot look up the key itself
+          options.headers = { "Authorization": `Bearer ${apikey}` };
+        }
+        return fetchJsonOrThrow(url, options);
+      }
+
+      function handleModelLoadError(service, error) {
+        console.error("Error fetching models:", error);
+        const status = error && typeof error.status === "number" ? error.status : null;
+        if (status) {
+          const apikeyEl = document.getElementById("apikey");
+          apiKeyValue = apikeyEl ? apikeyEl.value.trim() : "";
+          if (service !== "OLLAMA" && service !== "LMSTUDIO" && !apiKeyValue) {
+            alert("an api_key is required for this service");
+          } else {
+            alert(`Failed to load models. HTTP status: ${status}`);
+          }
+        } else {
+          alert("Failed to load models. Check the hoststub and console for errors.");
+        }
+      }
+
+      async function loadModelList(fromPreset = false) {
+        availableModels = [];
+        const service = document.getElementById("service").value;
+        const hoststub = document.getElementById("hoststub").value;
+
+        try {
+          const responsej = await requestModelsForService(service, hoststub);
+          renderAvailableModels(service, responsej);
+          if (service === "OLLAMA") {
+            renderRecommendedModels(hoststub);
+          } else {
+            const loadModelContainer = document.getElementById("loadModelContainer");
+            if (!loadModelContainer) return;
+            loadModelContainer.innerHTML = "";
+            loadModelContainer.style.display = "none";
+          }
+          persistInferenceSystem();
+        } catch (error) {
+          handleModelLoadError(service, error);
+          if (fromPreset) {
+            console.warn("Auto-load of model list failed for preset inference system.");
+          }
+        }
+      }
+      
+      
+      /***
+       ***  Download Activity
+       ***/
+      
+      function updateBeforeUnloadGuard() {
+        if (activeDownloadCount > 0 || hasRunningCapabilityTests()) {
+          window.addEventListener("beforeunload", beforeUnloadHandler);
+        } else {
+          window.removeEventListener("beforeunload", beforeUnloadHandler);
+        }
+      }
+
+      function hasRunningCapabilityTests() {
+        return !!document.querySelector(
+          'tr[data-thinking-test-in-flight="true"], tr[data-tooling-test-in-flight="true"], tr[data-vision-test-in-flight="true"], tr[data-format-test-in-flight="true"]'
+        );
+      }
+
+      function getDownloadActivityElements() {
+        return {
+          container: document.getElementById("downloadActivityContainer"),
+          list: document.getElementById("downloadActivityList")
+        };
+      }
+
+      function getTestActivityElements() {
+        return {
+          container: document.getElementById("testActivityContainer"),
+          list: document.getElementById("testActivityList")
+        };
+      }
+
+      function addTestActivity(modelName, testName) {
+        const { container, list } = getTestActivityElements();
+        if (!container || !list || !modelName || !testName) return null;
+
+        const activityId = `test_${modelName}`;
+        const existing = testActivities.get(activityId);
+        if (existing) {
+          existing.activeTests.add(testName);
+          updateTestActivitySubtitle(existing);
+          return activityId;
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "test-activity";
+        wrapper.dataset.activityId = activityId;
+        wrapper.style.marginBottom = "8px";
+        wrapper.style.padding = "8px";
+        wrapper.style.border = "1px solid #ddd";
+        wrapper.style.borderRadius = "4px";
+        wrapper.style.backgroundColor = "#f8f8f8";
+
+        const title = document.createElement("div");
+        title.className = "test-activity-title";
+        title.textContent = `Testing ${modelName}`;
+        title.style.fontWeight = "bold";
+        title.style.marginBottom = "4px";
+        wrapper.appendChild(title);
+
+        const progress = document.createElement("progress");
+        progress.max = 100;
+        progress.style.width = "100%";
+        progress.removeAttribute("value");
+        progress.setAttribute("aria-busy", "true");
+        wrapper.appendChild(progress);
+
+        const subtitle = document.createElement("div");
+        subtitle.className = "test-activity-subtitle";
+        subtitle.style.fontSize = "0.9em";
+        subtitle.style.marginTop = "4px";
+        wrapper.appendChild(subtitle);
+
+        list.appendChild(wrapper);
+        container.style.display = "block";
+        const activity = {
+          wrapper,
+          subtitle,
+          activeTests: new Set([testName])
+        };
+        updateTestActivitySubtitle(activity);
+        testActivities.set(activityId, activity);
+        return activityId;
+      }
+
+      function updateTestActivitySubtitle(activity) {
+        if (!activity || !activity.subtitle) return;
+        const names = Array.from(activity.activeTests);
+        activity.subtitle.textContent = names.length <= 1
+          ? `${names[0]} test in progress...`
+          : `${names.join(", ")} tests in progress...`;
+      }
+
+      function removeTestActivity(activityId, testName) {
+        const activity = testActivities.get(activityId);
+        if (!activity) return;
+        if (testName) {
+          activity.activeTests.delete(testName);
+        }
+        if (activity.activeTests.size > 0) {
+          updateTestActivitySubtitle(activity);
+          return;
+        }
+        if (activity.wrapper && activity.wrapper.parentNode) {
+          activity.wrapper.parentNode.removeChild(activity.wrapper);
+        }
+        if (testActivities.has(activityId)) {
+          testActivities.delete(activityId);
+        }
+        const { container, list } = getTestActivityElements();
+        if (container && list && !list.hasChildNodes()) {
+          container.style.display = "none";
+        }
+      }
+
+      function addDownloadActivity(modelName) {
+        const { container, list } = getDownloadActivityElements();
+        if (!container || !list) return null;
+
+        const activityId = `download_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const wrapper = document.createElement("div");
+        wrapper.className = "download-activity";
+        wrapper.dataset.activityId = activityId;
+        wrapper.style.marginBottom = "8px";
+        wrapper.style.padding = "8px";
+        wrapper.style.border = "1px solid #ddd";
+        wrapper.style.borderRadius = "4px";
+        wrapper.style.backgroundColor = "#f8f8f8";
+
+        const title = document.createElement("div");
+        title.className = "download-activity-title";
+        title.textContent = `Downloading ${modelName}`;
+        title.style.fontWeight = "bold";
+        title.style.marginBottom = "4px";
+        wrapper.appendChild(title);
+
+        const progress = document.createElement("progress");
+        progress.max = 100;
+        progress.style.width = "100%";
+        progress.removeAttribute("value"); // indeterminate
+        progress.setAttribute("aria-busy", "true");
+        wrapper.appendChild(progress);
+
+        const subtitle = document.createElement("div");
+        subtitle.className = "download-activity-subtitle";
+        subtitle.textContent = "Download in progress…";
+        subtitle.style.fontSize = "0.9em";
+        subtitle.style.marginTop = "4px";
+        wrapper.appendChild(subtitle);
+
+        list.appendChild(wrapper);
+        container.style.display = "block";
+
+        downloadActivities.set(activityId, wrapper);
+        activeDownloadCount = downloadActivities.size;
+        updateBeforeUnloadGuard();
+        return activityId;
+      }
+
+      function updateDownloadActivity(activityId, payload) {
+        const wrapper = downloadActivities.get(activityId);
+        if (!wrapper || !payload) return;
+        const progress = wrapper.querySelector("progress");
+        const subtitle = wrapper.querySelector(".download-activity-subtitle");
+        const status = payload.status || "";
+        if (progress && typeof payload.total === "number" && payload.total > 0
+            && typeof payload.completed === "number") {
+          progress.value = Math.min(100, (payload.completed / payload.total) * 100);
+        }
+        if (subtitle) {
+          let text = status || "Download in progress…";
+          if (typeof payload.total === "number" && payload.total > 0
+              && typeof payload.completed === "number") {
+            const percent = Math.min(100, (payload.completed / payload.total) * 100);
+            const mb = (bytes) => (bytes / (1024 * 1024)).toFixed(0);
+            text = `${status} — ${percent.toFixed(1)}% (${mb(payload.completed)} / ${mb(payload.total)} MB)`;
+          }
+          subtitle.textContent = text;
+        }
+      }
+
+      function removeDownloadActivity(activityId) {
+        const wrapper = downloadActivities.get(activityId);
+        if (wrapper && wrapper.parentNode) {
+          wrapper.parentNode.removeChild(wrapper);
+        }
+        if (downloadActivities.has(activityId)) {
+          downloadActivities.delete(activityId);
+          activeDownloadCount = downloadActivities.size;
+        }
+        const { container, list } = getDownloadActivityElements();
+        if (container && list && !list.hasChildNodes()) {
+          container.style.display = "none";
+        }
+        updateBeforeUnloadGuard();
+      }
+
+      /***
+       ***  Rendering Functions
+       ***/
+
+      function setHoststub() {
+        // this is called when the user changes the service
+        const service = document.getElementById("service").value;
+        const hoststubInput = document.getElementById("hoststub");
+        const apikeyInput = document.getElementById("apikey");
+
+        if (service === "OLLAMA") {
+          hoststubInput.value = "http://localhost:11434";
+        } else if (service === "LMSTUDIO") {
+          hoststubInput.value = "http://localhost:1234";
+        } else if (service === "OPENAI") {
+          hoststubInput.value = "https://api.openai.com";
+        } else if (service === "OPENROUTER") {
+          hoststubInput.value = "https://openrouter.ai/api";
+        } else {
+          hoststubInput.value = "";
+        }
+        
+        if (!apikeyInput) return;
+
+        if (service === "OLLAMA" || service === "LMSTUDIO") {
+          apikeyInput.disabled = true;
+          apikeyInput.value = "";
+        } else {
+          apikeyInput.disabled = false;
+        }
+      }
+
+      // Service dropdown handler: reset the hoststub to the service default, then
+      // reflect the resulting endpoint in the Services table.
+      function serviceChanged() {
+        setHoststub();
+        syncSelectedServiceRow();
+      }
+
+      function applyPresetInference() {
+        const serviceSelect = document.getElementById("service");
+        const hoststubInput = document.getElementById("hoststub");
+        const apikeyInput = document.getElementById("apikey");
+        const body = document.body;
+        const presetService = (body.getAttribute("data-llm-service") || "").trim();
+        const presetHoststub = (body.getAttribute("data-llm-hoststub") || "").trim();
+        const presetApikey = (body.getAttribute("data-llm-apikey") || "").trim();
+        if (serviceSelect && presetService) {
+          serviceSelect.value = presetService;
+        }
+        setHoststub();
+        if (hoststubInput && presetHoststub) {
+          hoststubInput.value = presetHoststub;
+        }
+        if (apikeyInput && presetApikey) {
+          apikeyInput.disabled = false;
+          apikeyInput.value = presetApikey;
+        }
+      }
+
+      async function handleModelDelete(modelName, deleteButton) {
+        if (!modelName) return;
+        if (getProductionModelNames().has(modelName)) {
+          alert(`Model "${modelName}" is currently used in the production table and cannot be deleted.`);
+          updateAvailableModelButtons();
+          return;
+        }
+        const hoststubInput = document.getElementById("hoststub");
+        const hoststub = hoststubInput ? hoststubInput.value.trim() : "";
+        if (!hoststub) {
+          alert("A hoststub is required to delete models.");
+          return;
+        }
+
+        if (deleteButton) {
+          deleteButton.disabled = true;
+          deleteButton.dataset.deleting = "true";
+        }
+
+        try {
+          await deleteOllamaModel(hoststub, modelName);
+        } catch (error) {
+          const status = error && typeof error.status === "number" ? error.status : null;
+          const message = status
+            ? `Failed to delete model ${modelName}. HTTP status: ${status}`
+            : `Error while deleting model ${modelName}. Check the console for details.`;
+          alert(message);
+          console.error("Model deletion failed:", error);
+          return;
+        } finally {
+          if (deleteButton) {
+            deleteButton.disabled = false;
+            delete deleteButton.dataset.deleting;
+          }
+        }
+
+        try {
+          await loadModelList();
+        } catch (refreshError) {
+          console.error("Failed to refresh models after deletion:", refreshError);
+        }
+      }
+
+      function renderAvailableModels(service, payload) {
+        const container = document.getElementById("availableModelsContainer");
+        if (!container) return;
+        const hoststubField = document.getElementById("hoststub");
+        const hoststub = hoststubField ? hoststubField.value.trim() : "";
+
+        const models = service === "OLLAMA" ? (payload.models || []) : (payload.data || []);
+        const getId = service === "OLLAMA" ? m => m.model : m => m.id;
+        const rows = [];
+
+        models.forEach(m => {
+          const id = getId(m);
+          if (!id) return;
+          availableModels.push(id);
+          const info = getRecommendedModelInfo(id) || {};
+          const capabilities = getPersistedCapabilitiesForModel(service, hoststub, id);
+          rows.push({
+            model: id,
+            ranking: info.ranking || "",
+            size: info.size || "",
+            description: info.description || "",
+            provider: info.provider || "",
+            license: info.license || "",
+            thinking: capabilityStatusLabel(capabilities.thinking),
+            tooling: capabilityStatusLabel(capabilities.tooling),
+            vision: capabilityStatusLabel(capabilities.vision),
+            format: capabilityStatusLabel(capabilities.format),
+            renderActions: () => createAvailableModelActionButtons(service, id)
+          });
+        });
+
+        renderModelTable(container, "Available Models", rows, AVAILABLE_MODEL_TABLE_HEADERS);
+        updateAvailableModelButtons();
+      }
+
+      function renderRecommendedModels(hoststub) {
+        const loadModelContainer = document.getElementById("loadModelContainer");
+        if (!loadModelContainer) return;
+
+        const downloadableModels = RECOMMENDED_MODELS.filter(m => m && !availableModels.includes(m[0]));
+        const rows = downloadableModels.map(m => {
+          const info = getRecommendedModelInfo(m[0]) || {};
+          return {
+            model: m[0],
+            ranking: info.ranking || "",
+            size: info.size || "",
+            description: info.description || "",
+            provider: info.provider || "",
+            license: info.license || "",
+            renderActions: () => createDownloadButton(hoststub, m[0])
+          };
+        });
+
+        renderModelTable(loadModelContainer, "Recommended Models", rows, MODEL_TABLE_HEADERS);
+      }
+      
+      function getRecommendedModelInfo(modelName) {
+        return RECOMMENDED_MODEL_MAP.get(modelName) || null;
+      }
+
+      function renderModelTable(container, title, rows, headers) {
+        if (!container) return;
+        container.innerHTML = `<legend>${title}</legend>`;
+        if (title === "Available Models") {
+          const legend = container.querySelector("legend");
+          if (legend) {
+            legend.id = "availableModels";
+          }
+        }
+        if (!rows || !rows.length) {
+          container.style.display = "none";
+          return;
+        }
+
+        const table = document.createElement("table");
+        table.className = "table table-striped";
+        const activeHeaders = Array.isArray(headers) && headers.length ? headers : MODEL_TABLE_HEADERS;
+
+        const thead = document.createElement("thead");
+        thead.className = "thead-dark";
+        const headerRow = document.createElement("tr");
+        activeHeaders.forEach(h => {
+          const th = document.createElement("th");
+          th.textContent = h;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        rows.forEach(row => {
+          const tr = document.createElement("tr");
+          const columnValues = title === "Available Models"
+            ? [
+                row.model || "",
+                row.ranking || "",
+                row.size || "",
+                row.description || "",
+                row.provider || "",
+                row.license || "",
+                row.thinking || "?",
+                row.tooling || "?",
+                row.vision || "?",
+                row.format || "?"
+              ]
+            : [
+                row.model || "",
+                row.ranking || "",
+                row.size || "",
+                row.description || "",
+                row.provider || "",
+                row.license || ""
+              ];
+          columnValues.forEach(value => {
+            const td = document.createElement("td");
+            //td.className = "narrow";
+            td.textContent = value;
+            tr.appendChild(td);
+          });
+
+          const actionsTd = document.createElement("td");
+          actionsTd.style.display = "flex";
+          actionsTd.style.alignItems = "center";
+          actionsTd.style.gap = "6px";
+          if (typeof row.renderActions === "function") {
+            const actionContent = row.renderActions();
+            if (Array.isArray(actionContent)) {
+              actionContent.forEach(node => node && actionsTd.appendChild(node));
+            } else if (actionContent instanceof Node) {
+              actionsTd.appendChild(actionContent);
+            }
+          }
+          tr.appendChild(actionsTd);
+          tbody.appendChild(tr);
+        });
+
+        table.appendChild(tbody);
+        container.appendChild(table);
+        container.style.display = "block";
+      }
+
+      function getProductionModelNames() {
+        const tbody = getProductionTableBody();
+        if (!tbody) return new Set();
+        const modelNames = new Set();
+        Array.from(tbody.querySelectorAll("tr")).forEach(row => {
+          if (!row.cells || row.cells.length <= PRODUCTION_MODEL_MODEL_COLUMN_INDEX) {
+            return;
+          }
+          const cell = row.cells[PRODUCTION_MODEL_MODEL_COLUMN_INDEX];
+          if (!cell) return;
+          const modelName = cell.textContent.trim();
+          if (modelName) {
+            modelNames.add(modelName);
+          }
+        });
+        return modelNames;
+      }
+
+      function updateAvailableModelButtons() {
+        const productionModels = getProductionModelNames();
+        document.querySelectorAll('button[data-action="delete-model"]').forEach(button => {
+          const modelId = button.dataset.modelId;
+          if (!modelId || button.dataset.deleting === "true") return;
+          const shouldDisable = productionModels.has(modelId);
+          button.disabled = shouldDisable;
+          button.title = shouldDisable
+            ? "Model is assigned as a production model and cannot be deleted."
+            : "";
+        });
+        document.querySelectorAll('button[data-action="deploy-model"]').forEach(button => {
+          const modelId = button.dataset.modelId;
+          if (!modelId) return;
+          const shouldDisable = productionModels.has(modelId);
+          button.disabled = shouldDisable;
+          button.title = shouldDisable
+            ? "Model is already listed in the production table."
+            : "";
+        });
+      }
+
+      function createAvailableModelActionButtons(service, modelId) {
+        return [createSelectButton(modelId), createDeleteButton(service, modelId)];
+      }
+
+      function createSelectButton(modelId) {
+        const selectBtn = document.createElement("button");
+        selectBtn.type = "button";
+        selectBtn.className = "btn btn-info btn-sm";
+        selectBtn.textContent = "Deploy";
+        selectBtn.dataset.action = "deploy-model";
+        selectBtn.dataset.modelId = modelId;
+        styleActionButton(selectBtn);
+        selectBtn.addEventListener("click", () => handleModelSelect(modelId));
+        return selectBtn;
+      }
+
+      function createDeleteButton(service, modelId) {
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "btn btn-danger btn-sm";
+        deleteBtn.textContent = "Delete";
+        styleActionButton(deleteBtn);
+        if (service === "OLLAMA") {
+          deleteBtn.dataset.action = "delete-model";
+          deleteBtn.dataset.modelId = modelId;
+          deleteBtn.addEventListener("click", () => {
+            const confirmed = window.confirm(`Do you really want to delete model "${modelId}"?`);
+            if (!confirmed) {
+              return;
+            }
+            handleModelDelete(modelId, deleteBtn);
+          });
+        } else {
+          deleteBtn.disabled = true;
+          deleteBtn.title = "Model management is only supported for Ollama.";
+        }
+        return deleteBtn;
+      }
+
+      function styleActionButton(button) {
+        if (!button) return button;
+        button.style.padding = "2px 8px";
+        button.style.lineHeight = "1.2";
+        button.style.display = "inline-flex";
+        button.style.alignItems = "center";
+        return button;
+      }
+
+      function isSelectableUsageColumn(col) {
+        return PRODUCTION_MODEL_ENABLED_USAGE_COLUMNS.has(col);
+      }
+
+      function handleModelSelect(modelName) {
+        if (!modelName) return;
+        upsertProductionModel(modelName);
+      }
+
+      // max_tokens (num_predict) options start at 2048 = half of the default num_ctx (4096),
+      // so a freshly deployed model reserves output room that fits inside the default window.
+      const MAX_TOKEN_OPTIONS = ["2048", "4096", "8192", "16384", "32768", "65536", "131072", "262440"];
+      const DEFAULT_MAX_TOKENS = "2048";
+
+      function normalizeMaxTokenValue(value) {
+        const text = (value == null ? "" : String(value)).trim();
+        return text || DEFAULT_MAX_TOKENS;
+      }
+
+      // The per-row max_tokens cell is an editable <select> so the value can be
+      // changed per model after deployment; it is the persisted source of truth
+      // (the max_tokens field at the top of the page is only a default for the
+      // next deploy). This ensures such a select exists in the cell and selects
+      // the given value, adding a bespoke option if the value is not a preset.
+      function ensureMaxTokenSelect(cell, value) {
+        if (!cell) return;
+        const normalized = normalizeMaxTokenValue(value);
+        let select = cell.querySelector('select[data-role="max-tokens"]');
+        if (!select) {
+          select = document.createElement("select");
+          select.className = "form-control";
+          select.dataset.role = "max-tokens";
+          const optionValues = MAX_TOKEN_OPTIONS.includes(normalized)
+            ? MAX_TOKEN_OPTIONS
+            : [normalized, ...MAX_TOKEN_OPTIONS];
+          optionValues.forEach(v => {
+            const option = document.createElement("option");
+            option.value = v;
+            option.textContent = v;
+            select.appendChild(option);
+          });
+          cell.textContent = "";
+          cell.appendChild(select);
+          select.addEventListener("change", () => persistProductionModels());
+        } else if (!Array.from(select.options).some(o => o.value === normalized)) {
+          const option = document.createElement("option");
+          option.value = normalized;
+          option.textContent = normalized;
+          select.appendChild(option);
+        }
+        select.value = normalized;
+      }
+
+      function readMaxTokenValue(cell) {
+        if (!cell) return DEFAULT_MAX_TOKENS;
+        const select = cell.querySelector('select[data-role="max-tokens"]');
+        if (select) return normalizeMaxTokenValue(select.value);
+        return normalizeMaxTokenValue(cell.textContent);
+      }
+
+      function upsertProductionModel(modelName) {
+        const tbody = getProductionTableBody();
+        if (!tbody) return;
+        const hadRowsBeforeInsert = tbody.querySelectorAll("tr").length > 0;
+
+        const serviceField = document.getElementById("service");
+        const hoststubField = document.getElementById("hoststub");
+        const apikeyField = document.getElementById("apikey");
+
+        const service = serviceField ? serviceField.value : "";
+        const hoststub = hoststubField ? hoststubField.value.trim() : "";
+        const apikey = apikeyField ? apikeyField.value.trim() : "";
+        const persistedCaps = getPersistedCapabilitiesForModel(service, hoststub, modelName);
+        // a newly deployed endpoint should also show up in the Services table
+        ensureServiceRow(service, hoststub);
+
+        let targetRow = Array.from(tbody.querySelectorAll("tr")).find(row => {
+          const modelCell = row.cells && row.cells[PRODUCTION_MODEL_MODEL_COLUMN_INDEX];
+          return modelCell && modelCell.textContent.trim() === modelName;
+        });
+        const isNewRow = !targetRow;
+
+        if (!targetRow) {
+          targetRow = document.createElement("tr");
+          targetRow.className = "TableCellLight";
+          for (let i = 0; i < PRODUCTION_MODEL_TOTAL_COLUMNS; i += 1) {
+            targetRow.appendChild(document.createElement("td"));
+          }
+          tbody.appendChild(targetRow);
+        } else if (targetRow.cells.length < PRODUCTION_MODEL_TOTAL_COLUMNS) {
+          const missing = PRODUCTION_MODEL_TOTAL_COLUMNS - targetRow.cells.length;
+          for (let i = 0; i < missing; i += 1) {
+            targetRow.appendChild(document.createElement("td"));
+          }
+        }
+
+        const cells = targetRow.cells;
+        // a new row starts at the default max_tokens; an existing row keeps the
+        // per-row value the user may have edited in the Production Models Matrix
+        const effectiveMaxToken = isNewRow
+          ? DEFAULT_MAX_TOKENS
+          : readMaxTokenValue(cells[PRODUCTION_MODEL_MAX_TOKENS_COLUMN_INDEX]);
+        const values = [service, modelName, hoststub, apikey, effectiveMaxToken];
+        values.forEach((value, index) => {
+          if (!cells[index]) return;
+          if (index === PRODUCTION_MODEL_MAX_TOKENS_COLUMN_INDEX) {
+            ensureMaxTokenSelect(cells[index], value);
+          } else {
+            cells[index].textContent = value || "";
+          }
+        });
+
+        ensureProductionRowUsageCells(targetRow, !hadRowsBeforeInsert);
+        setThinkingFlagForRow(targetRow, persistedCaps.thinking);
+        setToolingFlagForRow(targetRow, persistedCaps.tooling);
+        setVisionFlagForRow(targetRow, persistedCaps.vision);
+        setFormatFlagForRow(targetRow, persistedCaps.format);
+        ensureProductionRowActionButton(targetRow);
+        persistProductionModels();
+        scheduleCapabilityVerificationForRow(targetRow, persistedCaps);
+      }
+
+      function getProductionTableBody() {
+        const table = document.getElementById("productionModelsTable");
+        return table ? table.querySelector("tbody") : null;
+      }
+
+      function normalizeProductionModelRows() {
+        const tbody = getProductionTableBody();
+        if (!tbody) return;
+        Array.from(tbody.querySelectorAll("tr")).forEach(row => {
+          const missingCells = PRODUCTION_MODEL_TOTAL_COLUMNS - row.cells.length;
+          for (let i = 0; i < missingCells; i += 1) {
+            row.appendChild(document.createElement("td"));
+          }
+          const maxTokenCell = row.cells[PRODUCTION_MODEL_MAX_TOKENS_COLUMN_INDEX];
+          ensureMaxTokenSelect(maxTokenCell, readMaxTokenValue(maxTokenCell));
+          ensureProductionRowUsageCells(row, false);
+          ensureProductionRowActionButton(row);
+          scheduleCapabilityVerificationForRow(row);
+        });
+        updateAvailableModelButtons();
+      }
+
+      function scheduleCapabilityVerificationForRow(row, capabilityStatuses) {
+        if (!row || !row.cells || row.cells.length < PRODUCTION_MODEL_TOTAL_COLUMNS) return;
+        const service = row.cells[0] ? row.cells[0].textContent.trim() : "";
+        const modelName = row.cells[PRODUCTION_MODEL_MODEL_COLUMN_INDEX]
+          ? row.cells[PRODUCTION_MODEL_MODEL_COLUMN_INDEX].textContent.trim()
+          : "";
+        const hoststub = row.cells[2] ? row.cells[2].textContent.trim() : "";
+        const apikey = row.cells[3] ? row.cells[3].textContent.trim() : "";
+        if (!service || !modelName || !hoststub) return;
+        const statuses = capabilityStatuses || getPersistedCapabilitiesForModel(service, hoststub, modelName);
+        if (statuses.thinking === "unknown") {
+          triggerThinkingCapabilityVerification(row, { service, hoststub, modelName, apikey });
+          return;
+        }
+        if (statuses.tooling === "unknown") {
+          triggerToolingCapabilityVerification(row, { service, hoststub, modelName, apikey });
+        }
+        if (statuses.vision === "unknown") {
+          triggerVisionCapabilityVerification(row, { service, hoststub, modelName, apikey });
+        }
+        if (statuses.format === "unknown") {
+          triggerFormatCapabilityVerification(row, { service, hoststub, modelName, apikey });
+        }
+      }
+
+      function persistInferenceSystem() {
+        const hoststubInput = document.getElementById("hoststub");
+        const apikeyInput = document.getElementById("apikey");
+        const serviceSelect = document.getElementById("service");
+        const inference_system = {
+          service: serviceSelect ? serviceSelect.value : "",
+          hoststub: hoststubInput ? hoststubInput.value : "",
+          api_key: apikeyInput ? apikeyInput.value : ""
+        };
+        fetch(PRODUCTION_MODEL_SUBMIT_URL, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ inference_system })
+        }).catch(err => {
+          console.error("Failed to persist inference system", err);
+        });
+      }
+
+      const SERVICE_DEFAULT_NUM_CTX = 4096;
+      // fixed num_ctx choices (4k..256k); max_tokens additionally offers 2048 below this range
+      const NUM_CTX_OPTIONS = ["4096", "8192", "16384", "32768", "65536", "131072", "262440"];
+      let storedServiceNumCtx = {};
+
+      function normalizeHoststubJs(hoststub) {
+        return (hoststub == null ? "" : String(hoststub)).trim().replace(/\/+$/, "");
+      }
+
+      // Build the fixed-option num_ctx <select> for a Services-table cell. Auto-saves on
+      // change, like the other inputs on this page.
+      function createNumCtxSelect(hoststub, value) {
+        const normalized = String(value || SERVICE_DEFAULT_NUM_CTX);
+        const select = document.createElement("select");
+        select.className = "form-control service-num-ctx";
+        select.dataset.hoststub = hoststub;
+        select.style.width = "140px";
+        const optionValues = NUM_CTX_OPTIONS.includes(normalized) ? NUM_CTX_OPTIONS : [normalized, ...NUM_CTX_OPTIONS];
+        optionValues.forEach(v => {
+          const option = document.createElement("option");
+          option.value = v;
+          option.textContent = v;
+          select.appendChild(option);
+        });
+        select.value = normalized;
+        select.addEventListener("change", () => saveServiceNumCtx());
+        return select;
+      }
+
+      // Populate the server-rendered num_ctx cells (.num-ctx-cell) with their selects.
+      function initServiceRows() {
+        document.querySelectorAll("#servicesTable tbody .num-ctx-cell").forEach(cell => {
+          if (cell.querySelector("select")) return;
+          cell.appendChild(createNumCtxSelect(cell.dataset.hoststub || "", cell.dataset.numCtx));
+        });
+      }
+
+      // Ensure the Services table has a row for the given endpoint. Server-rendered rows
+      // exist for deployed endpoints; this adds a row for a service that is selected in
+      // the Service Selection box but not yet deployed, prefilled with its stored window
+      // or the default. Existing rows (and any edits) are left untouched.
+      function ensureServiceRow(service, hoststub) {
+        const tbody = document.querySelector("#servicesTable tbody");
+        const key = normalizeHoststubJs(hoststub);
+        if (!tbody || !key) return;
+        const present = Array.from(tbody.querySelectorAll(".service-num-ctx"))
+          .some(sel => normalizeHoststubJs(sel.dataset.hoststub) === key);
+        if (present) return;
+        const value = storedServiceNumCtx[key] || SERVICE_DEFAULT_NUM_CTX;
+        const tr = document.createElement("tr");
+        const tdService = document.createElement("td");
+        tdService.textContent = service || "";
+        const tdHost = document.createElement("td");
+        tdHost.textContent = key;
+        const tdCtx = document.createElement("td");
+        tdCtx.className = "num-ctx-cell";
+        tdCtx.dataset.hoststub = key;
+        tdCtx.dataset.numCtx = value;
+        tdCtx.appendChild(createNumCtxSelect(key, value));
+        tr.appendChild(tdService);
+        tr.appendChild(tdHost);
+        tr.appendChild(tdCtx);
+        tbody.appendChild(tr);
+      }
+
+      // Reflect the currently selected Service Selection endpoint in the Services table.
+      function syncSelectedServiceRow() {
+        const serviceSelect = document.getElementById("service");
+        const hoststubInput = document.getElementById("hoststub");
+        if (!serviceSelect || !hoststubInput) return;
+        ensureServiceRow(serviceSelect.value, hoststubInput.value);
+      }
+
+      function saveServiceNumCtx() {
+        const service_num_ctx = {};
+        document.querySelectorAll("#servicesTable .service-num-ctx").forEach(sel => {
+          const hoststub = (sel.dataset.hoststub || "").trim();
+          const value = parseInt(sel.value, 10);
+          if (hoststub && Number.isFinite(value) && value > 0) service_num_ctx[hoststub] = value;
+        });
+        fetch(PRODUCTION_MODEL_SUBMIT_URL, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ service_num_ctx })
+        }).catch(err => {
+          console.error("Failed to persist service context windows", err);
+        });
+      }
+
+      function ensureProductionRowUsageCells(row, defaultChecked) {
+        if (!row) return;
+        // ensure existence of checkboxes
+        for (let col = PRODUCTION_MODEL_USAGE_COLUMN_START; col <= PRODUCTION_MODEL_FEATURE_COLUMN_END; col += 1) {
+          const cell = row.cells[col];
+          if (!cell) continue;
+          if (col >= PRODUCTION_MODEL_FEATURE_COLUMN_START) {
+            if (!cell.textContent.trim()) {
+              cell.textContent = "?";
+            }
+            continue;
+          }
+          let checkbox = cell.querySelector('input[type="checkbox"]');
+          let isNewCheckbox = false;
+          if (!checkbox) {
+            checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            cell.textContent = "";
+            cell.appendChild(checkbox);
+            checkbox.checked = !!defaultChecked && isSelectableUsageColumn(col);
+            isNewCheckbox = true;
+          }
+          checkbox.disabled = !isSelectableUsageColumn(col);
+          if (isNewCheckbox && !isSelectableUsageColumn(col)) checkbox.checked = false;
+          initializeUsageCheckbox(checkbox, col);
+        }
+        if (defaultChecked) {
+            // enforce feature exclusivity for row
+            if (!row) return;
+            for (let col = PRODUCTION_MODEL_USAGE_COLUMN_START; col <= PRODUCTION_MODEL_USAGE_COLUMN_END; col += 1) {
+              if (!isSelectableUsageColumn(col)) continue;
+              const cell = row.cells[col];
+              if (!cell) continue;
+              const checkbox = cell.querySelector('input[type="checkbox"]');
+              if (!checkbox || !checkbox.checked) continue;
+              handleUsageCheckboxToggle(col, checkbox);
+            }
+        }
+        updateUndeployButtonState(row);
+      }
+
+      function initializeUsageCheckbox(checkbox, col) {
+        if (!checkbox) return;
+        checkbox.dataset.featureColumn = String(col);
+        if (checkbox.dataset.listenerAttached === "true") {
+          return;
+        }
+        checkbox.addEventListener("change", event => {
+          handleUsageCheckboxToggle(col, event.currentTarget);
+        });
+        checkbox.dataset.listenerAttached = "true";
+      }
+
+      function handleUsageCheckboxToggle(columnIndex, checkbox) {
+        if (!checkbox) return;
+        const tbody = getProductionTableBody();
+        if (!tbody) return;
+        const currentRow = checkbox.closest("tr");
+
+        if (checkbox.checked) {
+          Array.from(tbody.querySelectorAll("tr")).forEach(row => {
+            const cell = row.cells[columnIndex];
+            if (!cell) return;
+            const otherCheckbox = cell.querySelector('input[type="checkbox"]');
+            if (!otherCheckbox || otherCheckbox === checkbox) return;
+            if (otherCheckbox.checked) {
+              otherCheckbox.checked = false;
+              updateUndeployButtonState(row);
+            }
+          });
+        } else {
+          ensureFeatureAssignedToAnotherModel(columnIndex, currentRow);
+        }
+
+        if (currentRow) {
+          updateUndeployButtonState(currentRow);
+        }
+        persistProductionModels();
+      }
+
+      function ensureProductionRowActionButton(row) {
+        if (!row || row.cells.length < PRODUCTION_MODEL_TOTAL_COLUMNS) {
+          return;
+        }
+        const actionCell = row.cells[PRODUCTION_MODEL_ACTION_COLUMN_INDEX];
+        if (!actionCell) return;
+        actionCell.textContent = "";
+        const undeployBtn = document.createElement("button");
+        undeployBtn.type = "button";
+        undeployBtn.className = "btn btn-warning btn-sm";
+        undeployBtn.textContent = "Undeploy";
+        undeployBtn.dataset.action = "undeploy";
+        styleActionButton(undeployBtn);
+        undeployBtn.addEventListener("click", () => {
+          // reassign any active features before removing this row
+          for (let col = PRODUCTION_MODEL_USAGE_COLUMN_START; col <= PRODUCTION_MODEL_USAGE_COLUMN_END; col += 1) {
+            const cell = row.cells[col];
+            if (!cell) continue;
+            const checkbox = cell.querySelector('input[type="checkbox"]');
+            if (checkbox && checkbox.checked) {
+              ensureFeatureAssignedToAnotherModel(col, row);
+            }
+          }
+          row.remove();
+          persistProductionModels();
+        });
+        actionCell.appendChild(undeployBtn);
+        updateUndeployButtonState(row);
+      }
+
+      function updateUndeployButtonState(row) {
+        if (!row) return;
+        const button = row.querySelector('button[data-action="undeploy"]');
+        if (!button) return;
+        button.disabled = false;
+        button.title = "Remove this model (features will be reassigned if possible).";
+      }
+
+      function ensureFeatureAssignedToAnotherModel(columnIndex, sourceRow) {
+        const tbody = getProductionTableBody();
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        if (rows.length <= 1) return; // nothing to reassign to
+        // If any other row already has the feature, keep it.
+        const othersHave = rows.some(r => {
+          if (r === sourceRow) return false;
+          const cell = r.cells[columnIndex];
+          const cb = cell ? cell.querySelector('input[type="checkbox"]') : null;
+          return cb && cb.checked;
+        });
+        if (othersHave) return;
+        // pick the first other row and assign
+        const target = rows.find(r => r !== sourceRow);
+        if (!target) return;
+        const targetCell = target.cells[columnIndex];
+        const targetCb = targetCell ? targetCell.querySelector('input[type="checkbox"]') : null;
+        if (targetCb) {
+          targetCb.checked = true;
+          updateUndeployButtonState(target);
+        }
+      }
+
+      function persistProductionModels() {
+        // read out table
+        const tbody = getProductionTableBody();
+        if (!tbody) return [];
+        const production_models_table = [];
+        Array.from(tbody.querySelectorAll("tr")).forEach(row => {
+          if (!row.cells || row.cells.length < PRODUCTION_MODEL_TOTAL_COLUMNS) {
+            return;
+          }
+          const rowData = {};
+          PRODUCTION_MODEL_COLUMN_NAMES.forEach((columnName, index) => {
+            if (index >= PRODUCTION_MODEL_FEATURE_COLUMN_START && index <= PRODUCTION_MODEL_FEATURE_COLUMN_END) {
+              rowData[columnName] = capabilityLabelToBoolean(row.cells[index] ? row.cells[index].textContent : "");
+            } else if (index >= PRODUCTION_MODEL_USAGE_COLUMN_START && index <= PRODUCTION_MODEL_USAGE_COLUMN_END) {
+              const checkbox = row.cells[index] ? row.cells[index].querySelector('input[type="checkbox"]') : null;
+              rowData[columnName] = checkbox && isSelectableUsageColumn(index) ? checkbox.checked : false;
+            } else if (index === PRODUCTION_MODEL_MAX_TOKENS_COLUMN_INDEX) {
+              rowData[columnName] = readMaxTokenValue(row.cells[index]);
+            } else {
+              rowData[columnName] = row.cells[index] ? row.cells[index].textContent.trim() : "";
+            }
+          });
+          const hasContent = rowData.service || rowData.model || rowData["hoststub"];
+          if (hasContent) {
+            production_models_table.push(rowData);
+          }
+        });
+        
+        // push to server
+        const hoststubInput = document.getElementById("hoststub");
+        const apikeyInput = document.getElementById("apikey");
+        const serviceSelect = document.getElementById("service");
+        const inference_system = {
+          service: serviceSelect ? serviceSelect.value : "",
+          hoststub: hoststubInput ? hoststubInput.value : "",
+          api_key: apikeyInput ? apikeyInput.value : ""
+        };
+
+        fetch(PRODUCTION_MODEL_SUBMIT_URL, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ production_models: production_models_table, inference_system, model_capabilities: persistedModelCapabilities })
+        }).catch(err => {
+          console.error("Failed to persist production models", err);
+        });
+        updateAvailableModelButtons();
+      }
+
+      function maybeApplyNoThinkingParameters(service, hoststub, modelName, payload) {
+        if (!payload) return payload;
+        const capabilities = getPersistedCapabilitiesForModel(service, hoststub, modelName);
+        if (capabilities.thinking === "supported") {
+          payload.reasoning_effort = "none";
+          payload.enable_thinking = false;
+        }
+        return payload;
+      }
+
+      function buildThinkingTestPayload(modelName) {
+        return {
+          model: modelName,
+          temperature: 0.1,
+          max_tokens: 64,
+          messages: [
+            { role: "user", content: TEST_STRINGS.thinkingUserMessage }
+          ],
+          stream: true
+        };
+      }
+
+      function chunkContainsThinkingTokens(chunkText) {
+        if (!chunkText) return false;
+        return /<think\b/i.test(chunkText)
+          || /"reasoning_content"\s*:/i.test(chunkText)
+          || /"reasoning"\s*:/i.test(chunkText)
+          || /"thinking"\s*:/i.test(chunkText);
+      }
+
+      function setThinkingFlagForRow(row, status) {
+        if (!row || row.cells.length <= PRODUCTION_MODEL_THINKING_COLUMN_INDEX) {
+          return;
+        }
+        const cell = row.cells[PRODUCTION_MODEL_THINKING_COLUMN_INDEX];
+        if (!cell) return;
+        cell.textContent = capabilityStatusLabel(status);
+      }
+
+      function triggerThinkingCapabilityVerification(row, { service, hoststub, modelName, apikey }) {
+        if (!row) return;
+        const normalizedHoststub = (hoststub || "").trim();
+        if (!normalizedHoststub || !modelName) {
+          return;
+        }
+        if (row.dataset.thinkingTestInFlight === "true") {
+          return;
+        }
+        row.dataset.thinkingTestInFlight = "true";
+        const activityId = addTestActivity(modelName, "thinking");
+        updateBeforeUnloadGuard();
+        runThinkingCapabilityTest(service, normalizedHoststub, modelName, apikey)
+          .then(success => {
+            const rowStillMounted = !!(document && document.body && document.body.contains(row));
+            setPersistedCapability(service, normalizedHoststub, modelName, "thinking", success ? "supported" : "unsupported");
+            if (!rowStillMounted) {
+              persistProductionModels();
+              return;
+            }
+            setThinkingFlagForRow(row, success ? "supported" : "unsupported");
+            persistProductionModels();
+            updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+            scheduleCapabilityVerificationForRow(row, getPersistedCapabilitiesForModel(service, normalizedHoststub, modelName));
+          })
+          .catch(error => {
+            if (isCapabilityUnsupportedError(error)) {
+              setPersistedCapability(service, normalizedHoststub, modelName, "thinking", "unsupported");
+              setThinkingFlagForRow(row, "unsupported");
+              persistProductionModels();
+              updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+              scheduleCapabilityVerificationForRow(row, getPersistedCapabilitiesForModel(service, normalizedHoststub, modelName));
+              return;
+            }
+            console.warn(`Thinking capability check failed for model "${modelName}".`, error);
+          })
+          .finally(() => {
+            delete row.dataset.thinkingTestInFlight;
+            if (activityId) removeTestActivity(activityId, "thinking");
+            updateBeforeUnloadGuard();
+          });
+      }
+
+      async function runThinkingCapabilityTest(service, hoststub, modelName, apikey) {
+        const endpointBase = hoststub.replace(/\/+$/, "");
+        if (!endpointBase) {
+          return false;
+        }
+        const targetUrl = proxyUrl(endpointBase, TEST_STRINGS.toolingEndpointPath);
+        const headers = { "Content-Type": "application/json" };
+        if (apikey) {
+          headers.Authorization = `Bearer ${apikey}`;
+        }
+        const controller = new AbortController();
+        const response = await fetch(targetUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(buildThinkingTestPayload(modelName)),
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          const error = new Error(`HTTP status ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        if (!response.body) {
+          return false;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let detectedThinking = false;
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunkText = decoder.decode(value, { stream: true });
+            if (chunkContainsThinkingTokens(chunkText)) {
+              detectedThinking = true;
+              controller.abort();
+              break;
+            }
+          }
+        } catch (error) {
+          if (!(detectedThinking && error && error.name === "AbortError")) {
+            throw error;
+          }
+        } finally {
+          try {
+            reader.releaseLock();
+          } catch (error) {
+          }
+        }
+        return detectedThinking;
+      }
+
+      /**
+       * Tooling capability check
+       */
+      function triggerToolingCapabilityVerification(row, { service, hoststub, modelName, apikey }) {
+        if (!row) return;
+        const normalizedHoststub = (hoststub || "").trim();
+        if (!normalizedHoststub || !modelName) {
+          return;
+        }
+        if (row.dataset.toolingTestInFlight === "true") {
+          return;
+        }
+        row.dataset.toolingTestInFlight = "true";
+        const activityId = addTestActivity(modelName, "tooling");
+        updateBeforeUnloadGuard();
+        runToolingCapabilityTest(service, normalizedHoststub, modelName, apikey)
+          .then(success => {
+            const rowStillMounted = !!(document && document.body && document.body.contains(row));
+            setPersistedCapability(service, normalizedHoststub, modelName, "tooling", success ? "supported" : "unsupported");
+            if (!rowStillMounted) {
+              persistProductionModels();
+              return;
+            }
+            setToolingFlagForRow(row, success ? "supported" : "unsupported");
+            persistProductionModels();
+            updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+          })
+          .catch(error => {
+            if (isCapabilityUnsupportedError(error)) {
+              setPersistedCapability(service, normalizedHoststub, modelName, "tooling", "unsupported");
+              setToolingFlagForRow(row, "unsupported");
+              persistProductionModels();
+              updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+              return;
+            }
+            console.warn(`Tooling capability check failed for model "${modelName}".`, error);
+          })
+          .finally(() => {
+            delete row.dataset.toolingTestInFlight;
+            if (activityId) removeTestActivity(activityId, "tooling");
+            updateBeforeUnloadGuard();
+          });
+      }
+
+      async function runToolingCapabilityTest(service, hoststub, modelName, apikey) {
+        const endpointBase = hoststub.replace(/\/+$/, "");
+        if (!endpointBase) {
+          return false;
+        }
+        const targetUrl = proxyUrl(endpointBase, TEST_STRINGS.toolingEndpointPath);
+        const headers = { "Content-Type": "application/json" };
+        if (apikey) {
+          headers.Authorization = `Bearer ${apikey}`;
+        }
+        const payload = buildToolingTestPayload(service, hoststub, modelName);
+        const response = await fetch(targetUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          const error = new Error(`HTTP status ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        const result = await response.json();
+        return toolingResponseIncludesExpectedToolCall(result);
+      }
+
+      function buildToolingTestPayload(service, hoststub, modelName) {
+        return maybeApplyNoThinkingParameters(service, hoststub, modelName, {
+          model: modelName,
+          temperature: 0.1,
+          max_tokens: 1024,
+          messages: [
+            { role: "system", content: TEST_STRINGS.toolingSystemMessage },
+            { role: "user", content: TEST_STRINGS.toolingUserMessage }
+          ],
+          tools: [{
+            type: "function",
+            function: {
+              name: TOOLING_EXPECTED_FUNCTION_NAME,
+              description: "With this tool you can switch on the light",
+              parameters: {
+                type: "object",
+                properties: {
+                  switch: {
+                    type: "boolean",
+                    description: "true for on, false for off"
+                  }
+                },
+                required: ["switch"],
+                additionalProperties: false
+              },
+              strict: true
+            }
+          }],
+          stream: false
+        });
+      }
+
+      function toolingResponseIncludesExpectedToolCall(response) {
+        if (!response || !Array.isArray(response.choices)) {
+          return false;
+        }
+        return response.choices.some(choice => {
+          const message = choice ? choice.message : null;
+          if (!message) {
+            return false;
+          }
+          const toolCalls = getToolCallsFromMessage(message);
+          if (!toolCalls.length) {
+            return false;
+          }
+          return toolCalls.some(call => {
+            const fn = call && call.function;
+            return fn && fn.name === TOOLING_EXPECTED_FUNCTION_NAME;
+          });
+        });
+      }
+
+      function getToolCallsFromMessage(message) {
+        if (!message) return [];
+        const candidates = message.tool_calls || message.tool_call || null;
+        if (!candidates) return [];
+        if (Array.isArray(candidates)) {
+          return candidates;
+        }
+        if (Array.isArray(candidates.data)) {
+          return candidates.data;
+        }
+        return [candidates];
+      }
+
+      function setToolingFlagForRow(row, status) {
+        if (!row || row.cells.length <= PRODUCTION_MODEL_TOOLING_COLUMN_INDEX) {
+          return;
+        }
+        const cell = row.cells[PRODUCTION_MODEL_TOOLING_COLUMN_INDEX];
+        if (!cell) return;
+        cell.textContent = capabilityStatusLabel(status);
+      }
+
+      function triggerVisionCapabilityVerification(row, { service, hoststub, modelName, apikey }) {
+        if (!row) return;
+        const normalizedHoststub = (hoststub || "").trim();
+        if (!normalizedHoststub || !modelName) {
+          return;
+        }
+        if (row.dataset.visionTestInFlight === "true") {
+          return;
+        }
+        row.dataset.visionTestInFlight = "true";
+        const activityId = addTestActivity(modelName, "vision");
+        updateBeforeUnloadGuard();
+        runVisionCapabilityTest(service, normalizedHoststub, modelName, apikey)
+          .then(success => {
+            const rowStillMounted = !!(document && document.body && document.body.contains(row));
+            setPersistedCapability(service, normalizedHoststub, modelName, "vision", success ? "supported" : "unsupported");
+            if (!rowStillMounted) {
+              persistProductionModels();
+              return;
+            }
+            setVisionFlagForRow(row, success ? "supported" : "unsupported");
+            persistProductionModels();
+            updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+          })
+          .catch(error => {
+            console.warn(`Vision capability check failed for model "${modelName}".`, error);
+          })
+          .finally(() => {
+            delete row.dataset.visionTestInFlight;
+            if (activityId) removeTestActivity(activityId, "vision");
+            updateBeforeUnloadGuard();
+          });
+      }
+
+      async function runVisionCapabilityTest(service, hoststub, modelName, apikey) {
+        const endpointBase = hoststub.replace(/\/+$/, "");
+        if (!endpointBase) {
+          return false;
+        }
+        const targetUrl = proxyUrl(endpointBase, TEST_STRINGS.toolingEndpointPath);
+        const headers = { "Content-Type": "application/json" };
+        if (apikey) {
+          headers.Authorization = `Bearer ${apikey}`;
+        }
+        const base64Image = await loadVisionTestImageBase64();
+        const payload = buildVisionTestPayload(service, hoststub, modelName, base64Image);
+        const response = await fetch(targetUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          const error = new Error(`HTTP status ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        const result = await response.json();
+        return visionResponseContainsExpectedAnswer(result);
+      }
+
+      function buildVisionTestPayload(service, hoststub, modelName, base64Image) {
+        return maybeApplyNoThinkingParameters(service, hoststub, modelName, {
+          model: modelName,
+          temperature: 0.1,
+          max_tokens: 512,
+          messages: [
+            { role: "system", content: TEST_STRINGS.visionSystemMessage },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: TEST_STRINGS.visionUserMessage },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:image/png;base64,${base64Image}`
+                  }
+                }
+              ]
+            }
+          ]
+        });
+      }
+
+      function visionResponseContainsExpectedAnswer(response) {
+        if (!response || !Array.isArray(response.choices)) {
+          return false;
+        }
+        return response.choices.some(choice => {
+          const message = choice ? choice.message : null;
+          const normalizedText = normalizeMessageText(message);
+          if (!normalizedText) {
+            return false;
+          }
+          return normalizedText.indexOf(TEST_STRINGS.visionExpectedText) !== -1;
+        });
+      }
+
+      function normalizeMessageText(message) {
+        if (!message) return "";
+        const { content } = message;
+        if (typeof content === "string") {
+          return content.trim();
+        }
+        if (Array.isArray(content)) {
+          return content.map(extractTextFromContent).filter(Boolean).join(" ").trim();
+        }
+        if (content && typeof content.text === "string") {
+          return content.text.trim();
+        }
+        return "";
+      }
+
+      function extractTextFromContent(part) {
+        if (!part) return "";
+        if (typeof part === "string") return part;
+        if (typeof part.text === "string") return part.text;
+        if (typeof part.content === "string") return part.content;
+        return "";
+      }
+
+      async function loadVisionTestImageBase64() {
+        if (cachedVisionTestImageBase64) {
+          return cachedVisionTestImageBase64;
+        }
+        if (cachedVisionTestImagePromise) {
+          return cachedVisionTestImagePromise;
+        }
+        cachedVisionTestImagePromise = fetch(TEST_STRINGS.visionTestImagePath)
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(`Failed to load test image (${response.status})`);
+            }
+            return response.blob();
+          })
+          .then(blob => blobToBase64(blob))
+          .then(base64 => {
+            cachedVisionTestImageBase64 = base64;
+            return base64;
+          })
+          .catch(error => {
+            cachedVisionTestImagePromise = null;
+            throw error;
+          });
+        return cachedVisionTestImagePromise;
+      }
+
+      function blobToBase64(blob) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(reader.error || new Error("Failed to read blob"));
+          reader.onloadend = () => {
+            const result = reader.result;
+            if (typeof result !== "string") {
+              reject(new Error("Unexpected data when reading blob"));
+              return;
+            }
+            const commaIndex = result.indexOf(",");
+            resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+          };
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      function setVisionFlagForRow(row, status) {
+        if (!row || row.cells.length <= PRODUCTION_MODEL_VISION_COLUMN_INDEX) {
+          return;
+        }
+        const cell = row.cells[PRODUCTION_MODEL_VISION_COLUMN_INDEX];
+        if (!cell) return;
+        cell.textContent = capabilityStatusLabel(status);
+      }
+
+      function triggerFormatCapabilityVerification(row, { service, hoststub, modelName, apikey }) {
+        if (!row) return;
+        const normalizedHoststub = (hoststub || "").trim();
+        if (!normalizedHoststub || !modelName) {
+          return;
+        }
+        if (row.dataset.formatTestInFlight === "true") {
+          return;
+        }
+        row.dataset.formatTestInFlight = "true";
+        const activityId = addTestActivity(modelName, "format");
+        updateBeforeUnloadGuard();
+        runFormatCapabilityTest(service, normalizedHoststub, modelName, apikey)
+          .then(success => {
+            const rowStillMounted = !!(document && document.body && document.body.contains(row));
+            setPersistedCapability(service, normalizedHoststub, modelName, "format", success ? "supported" : "unsupported");
+            if (!rowStillMounted) {
+              persistProductionModels();
+              return;
+            }
+            setFormatFlagForRow(row, success ? "supported" : "unsupported");
+            persistProductionModels();
+            updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+          })
+          .catch(error => {
+            if (isCapabilityUnsupportedError(error)) {
+              setPersistedCapability(service, normalizedHoststub, modelName, "format", "unsupported");
+              setFormatFlagForRow(row, "unsupported");
+              persistProductionModels();
+              updateAvailableModelCapabilityCells(service, normalizedHoststub, modelName);
+              return;
+            }
+            console.warn(`Format capability check failed for model "${modelName}".`, error);
+          })
+          .finally(() => {
+            delete row.dataset.formatTestInFlight;
+            if (activityId) removeTestActivity(activityId, "format");
+            updateBeforeUnloadGuard();
+          });
+      }
+
+      async function runFormatCapabilityTest(service, hoststub, modelName, apikey) {
+        const endpointBase = hoststub.replace(/\/+$/, "");
+        if (!endpointBase) {
+          return false;
+        }
+        for (const testCase of FORMAT_TEST_CASES) {
+          const mood = await runSingleFormatCapabilityTest(service, endpointBase, modelName, apikey, testCase.text);
+          if (mood !== testCase.expectedMood) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      async function runSingleFormatCapabilityTest(service, endpointBase, modelName, apikey, inputText) {
+        const targetUrl = proxyUrl(endpointBase, TEST_STRINGS.toolingEndpointPath);
+        const headers = { "Content-Type": "application/json" };
+        if (apikey) {
+          headers.Authorization = `Bearer ${apikey}`;
+        }
+        const payload = buildFormatTestPayload(service, endpointBase, modelName, inputText);
+        const response = await fetch(targetUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          const error = new Error(`HTTP status ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        const result = await response.json();
+        return extractMoodFromFormatResponse(result);
+      }
+
+      function buildFormatTestPayload(service, hoststub, modelName, inputText) {
+        return maybeApplyNoThinkingParameters(service, hoststub, modelName, {
+          model: modelName,
+          temperature: 0.1,
+          max_tokens: 128,
+          messages: [
+            { role: "system", content: TEST_STRINGS.formatSystemMessage },
+            { role: "user", content: inputText }
+          ],
+          stream: false,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              strict: true,
+              schema: FORMAT_TEST_SCHEMA
+            }
+          }
+        });
+      }
+
+      function extractMoodFromFormatResponse(response) {
+        const candidates = [];
+        if (response && Array.isArray(response.choices)) {
+          response.choices.forEach(choice => {
+            if (choice && choice.message) {
+              candidates.push(choice.message);
+            }
+          });
+        }
+        if (response && response.message) {
+          candidates.push(response.message);
+        }
+        for (const message of candidates) {
+          const parsedMood = extractMoodFromMessage(message);
+          if (parsedMood) {
+            return parsedMood;
+          }
+        }
+        return "";
+      }
+
+      function extractMoodFromMessage(message) {
+        if (!message) return "";
+        if (message.parsed && typeof message.parsed === "object") {
+          const mood = normalizeMoodValue(message.parsed.mood);
+          if (mood) return mood;
+        }
+        if (message.content && typeof message.content === "object" && !Array.isArray(message.content)) {
+          const mood = normalizeMoodValue(message.content.mood);
+          if (mood) return mood;
+        }
+        const normalizedText = normalizeMessageText(message);
+        if (!normalizedText) return "";
+        try {
+          const parsed = JSON.parse(normalizedText);
+          return normalizeMoodValue(parsed && parsed.mood);
+        } catch (error) {
+          return "";
+        }
+      }
+
+      function normalizeMoodValue(value) {
+        const mood = typeof value === "string" ? value.trim().toLowerCase() : "";
+        return mood === "angry" || mood === "happy" || mood === "surprised" ? mood : "";
+      }
+
+      function setFormatFlagForRow(row, status) {
+        if (!row || row.cells.length <= PRODUCTION_MODEL_FORMAT_COLUMN_INDEX) {
+          return;
+        }
+        const cell = row.cells[PRODUCTION_MODEL_FORMAT_COLUMN_INDEX];
+        if (!cell) return;
+        cell.textContent = capabilityStatusLabel(status);
+      }
+
+      function updateAvailableModelCapabilityCells(service, hoststub, modelName) {
+        const container = document.getElementById("availableModelsContainer");
+        if (!container) return;
+        const capabilities = getPersistedCapabilitiesForModel(service, hoststub, modelName);
+        container.querySelectorAll("tbody tr").forEach(row => {
+          const modelCell = row.cells && row.cells[0];
+          if (!modelCell || modelCell.textContent.trim() !== modelName) return;
+          if (row.cells[6]) row.cells[6].textContent = capabilityStatusLabel(capabilities.thinking);
+          if (row.cells[7]) row.cells[7].textContent = capabilityStatusLabel(capabilities.tooling);
+          if (row.cells[8]) row.cells[8].textContent = capabilityStatusLabel(capabilities.vision);
+          if (row.cells[9]) row.cells[9].textContent = capabilityStatusLabel(capabilities.format);
+        });
+      }
+
+      /*** pending pulls are remembered in localStorage so that a reloaded page
+       *** can re-attach to downloads which are still running on the ollama server
+       *** (a second /api/pull for the same model joins the running download) ***/
+
+      const PENDING_PULLS_STORAGE_KEY = "yacy.llm.pendingPulls";
+      const PENDING_PULL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+      function readPendingPulls() {
+        try {
+          const parsed = JSON.parse(window.localStorage.getItem(PENDING_PULLS_STORAGE_KEY) || "[]");
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (storageError) {
+          return [];
+        }
+      }
+
+      function writePendingPulls(entries) {
+        try {
+          if (entries.length === 0) {
+            window.localStorage.removeItem(PENDING_PULLS_STORAGE_KEY);
+          } else {
+            window.localStorage.setItem(PENDING_PULLS_STORAGE_KEY, JSON.stringify(entries));
+          }
+        } catch (storageError) {
+          // storage unavailable: downloads still work, they just cannot be re-attached
+        }
+      }
+
+      function addPendingPull(hoststub, modelName) {
+        const entries = readPendingPulls().filter(e => !(e.hoststub === hoststub && e.model === modelName));
+        entries.push({ hoststub, model: modelName, startedAt: Date.now() });
+        writePendingPulls(entries);
+      }
+
+      function removePendingPull(hoststub, modelName) {
+        writePendingPulls(readPendingPulls().filter(e => !(e.hoststub === hoststub && e.model === modelName)));
+      }
+
+      async function performModelDownload(hoststub, modelName, downloadBtn) {
+        const activityId = addDownloadActivity(modelName);
+        if (downloadBtn) downloadBtn.disabled = true;
+        addPendingPull(hoststub, modelName);
+        let downloadError = null;
+        try {
+          await downloadOllamaModel(hoststub, modelName, (payload) => {
+            if (activityId) updateDownloadActivity(activityId, payload);
+          });
+          console.log(`Model ${modelName} is now available on server ${hoststub}.`);
+        } catch (err) {
+          downloadError = err;
+          console.error("Error during model pull request:", err);
+        } finally {
+          if (downloadBtn) downloadBtn.disabled = false;
+          if (activityId) {
+            removeDownloadActivity(activityId);
+          }
+          try {
+            await loadModelList();
+          } catch (refreshError) {
+            console.error("Failed to refresh models after download:", refreshError);
+          }
+          // a dropped connection is not necessarily a failed pull: ollama keeps
+          // pulling server-side, so only report an error if the model is still missing
+          const stillMissing = downloadError && !availableModels.includes(modelName);
+          const connectionLost = stillMissing && !downloadError.payload
+              && !(typeof downloadError.status === "number" && downloadError.status !== 200);
+          if (connectionLost) {
+            // keep the pending entry: a page reload will re-attach to the running pull
+            alert(`Connection lost while pulling model ${modelName} from server ${hoststub}. The download continues on the server; reload this page to re-attach to its progress.`);
+          } else {
+            removePendingPull(hoststub, modelName);
+            if (stillMissing) {
+              const status = typeof downloadError.status === "number" ? downloadError.status : null;
+              const message = downloadError.payload
+                ? `Failed to download model ${modelName}: ${downloadError.message}`
+                : `Failed to download model ${modelName}. HTTP status: ${status}`;
+              alert(message);
+            }
+          }
+        }
+      }
+
+      function resumePendingPulls() {
+        const now = Date.now();
+        const entries = readPendingPulls().filter(e => e && e.hoststub && e.model
+            && (typeof e.startedAt !== "number" || now - e.startedAt < PENDING_PULL_MAX_AGE_MS));
+        writePendingPulls(entries);
+        entries.forEach(entry => {
+          // re-issuing the pull joins the running download and streams its progress;
+          // if the pull already finished it returns success almost immediately
+          performModelDownload(entry.hoststub, entry.model, null)
+            .catch(resumeError => console.error("Failed to resume model download:", resumeError));
+        });
+      }
+
+      function createDownloadButton(hoststub, modelName) {
+        const downloadBtn = document.createElement("button");
+        downloadBtn.type = "button";
+        downloadBtn.className = "btn btn-primary btn-sm";
+        downloadBtn.textContent = "Download";
+        styleActionButton(downloadBtn);
+        downloadBtn.addEventListener("click", () => performModelDownload(hoststub, modelName, downloadBtn));
+        return downloadBtn;
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        try {
+          try {
+            storedServiceNumCtx = JSON.parse(document.body.dataset.serviceNumCtx || "{}") || {};
+          } catch (e) {
+            storedServiceNumCtx = {};
+          }
+          persistedModelCapabilities = readPersistedModelCapabilities();
+          normalizeProductionModelRows();
+          initServiceRows();
+          applyPresetInference();
+          syncSelectedServiceRow();
+          resumePendingPulls();
+          // auto-show available models if a preset inference exists
+          const body = document.body;
+          const presetService = (body.getAttribute("data-llm-service") || "").trim();
+          const presetHoststub = (body.getAttribute("data-llm-hoststub") || "").trim();
+          if (presetService && presetHoststub) {
+            loadModelList(true);
+          }
+          if (window.location.hash === "#availableModels") {
+            loadModelList(true)
+              .catch(() => null)
+              .finally(() => {
+                window.setTimeout(() => {
+                  const target = document.getElementById("availableModels")
+                      || document.getElementById("availableModelsAnchor")
+                      || document.getElementById("availableModelsContainer");
+                  if (target) {
+                    target.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }
+                }, 0);
+              });
+          }
+        } catch (e) {
+          console.error("Initialization failed", e);
+        }
+      });
+
+    </script>
+
+    
+    <h2>LLM Selection</h2>
+
+    <p>
+        Here you can pick models from an LLM model service to select them as production model.
+        In the "Production Models Matrix" you can then assign each selected model a function inside YaCy
+    </p>
+    <p>
+        <b>Install your local LLM service!</b> You need either a local <a href="https://ollama.com/">ollama</a> or <a href="https://lmstudio.ai/">LM Studio</a> instance running on your local host or inside the intranet.
+    </p>
+    <form id="llmForm">
+    <fieldset><legend>Service Selection</legend>
+      <dl>
+        <dt class="TableCellDark">service</dt>
+        <dd>
+            <select name="service" id="service" class="form-control" onchange="serviceChanged()">
+            <option value="OLLAMA" selected="selected">Ollama</option>
+            <option value="LMSTUDIO">LMStudio</option>
+            <option value="OPENAI">OpenAI</option>
+            <option value="OPENROUTER">Open Router</option>
+            </select>&nbsp; This makes a preset to the Hoststub value
+        </dd>
+
+        <dt class="TableCellDark">hoststub</dt>
+        <dd><input type="text" name="hoststub" id="hoststub" value="http://localhost:11434" size="30" maxlength="60" class="form-control" onchange="syncSelectedServiceRow()"/>&nbsp; you can probably leave this to the default value
+        </dd>
+
+        <dt class="TableCellDark">api_key</dt>
+        <dd><input type="text" name="apikey" id="apikey" value="" disabled=true size="30" maxlength="120" class="form-control"/>&nbsp; (not required for Ollama or LMStudio)
+            <br/>
+            <small>
+                The selected service's context window (<code>num_ctx</code>) is shown and editable in the
+                <a href="#services">Services</a> table below. A model's generated-token cap (<code>max_tokens</code> =
+                Ollama <code>num_predict</code>) is set per model in the Production Models Matrix.
+            </small>
+        </dd>
+
+        <dt>&nbsp;</dt>
+        <dd><input name="llmselection" value="Load Model Name List" class="btn btn-primary" style="width:240px;" onclick="loadModelList()"/>
+        </dd>
+      </dl>
+    </fieldset>
+    </form>
+
+    <fieldset id="servicesContainer" style="display: block;"><a name="services"></a><legend>Services</legend>
+        <p>
+            <b>num_ctx</b> is the context window (in tokens) of the inference service &mdash; a per-service
+            value, shared by all models on that endpoint. It is the total budget for prompt <i>plus</i>
+            generated output; YaCy uses it to size prompts so they leave room to generate. The row for the
+            service selected above appears here automatically with its stored (or default) window.
+            This value is <b>advisory</b>: set it to match the window your backend actually serves
+            (Ollama: <code>OLLAMA_CONTEXT_LENGTH</code>, a Modelfile <code>PARAMETER num_ctx</code>, or the
+            Context Length setting). YaCy does not enforce it on the backend.
+        </p>
+        <table class="table table-striped" id="servicesTable">
+            <thead class="thead-dark">
+                <tr>
+                    <td>service</td>
+                    <td>hoststub</td>
+                    <td>num_ctx</td>
+                </tr>
+            </thead>
+            <tbody>
+        #{services}#
+            <tr>
+                <td>#[service]#</td>
+                <td>#[hoststub]#</td>
+                <td class="num-ctx-cell" data-hoststub="#[hoststub]#" data-num-ctx="#[num_ctx]#"></td>
+            </tr>
+        #{/services}#
+            </tbody>
+        </table>
+    </fieldset>
+
+    <fieldset id="loadModelContainer" style="display:none"></fieldset>
+    <fieldset id="downloadActivityContainer" style="display:none">
+      <legend>Model Downloads</legend>
+      <div id="downloadActivityList"></div>
+    </fieldset>
+    <a id="availableModelsAnchor"></a>
+    <fieldset id="availableModelsContainer" style="display:none"><a name="availableModels"></a></fieldset>
+
+    <fieldset id="productionModelsContainer" style="display: block;"><a name="productionModels"></a><legend>Production Models Matrix</legend>
+        <div id="testActivityContainer" style="display:none; margin-bottom:12px;">
+            <div id="testActivityList"></div>
+        </div>
+        <table class="table table-striped" id="productionModelsTable">
+            <thead class="thead-dark">
+                <tr>
+                    <td>service</td>
+                    <td>model</td>
+                    <td>hoststub</td>
+                    <td>api_key</td>
+                    <td>max_tokens</td>
+                    
+                    <td class="narrow">search-answers<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model creates answers for search requests</span></span></td>
+                    <td class="narrow">chat<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model is used in the chat interface and as default for the RAG proxy</span></span></td>
+                    <td class="narrow">translation<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model can be used to make translations of the web UI</span></span></td>
+                    <td class="narrow">classification<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model is used to classify prompts to find out what they demand</span></span></td>
+                    <td class="narrow">search-query<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model produces search queries to YaCy search from prompts in RAG or chat</span></span></td>
+                    <td class="narrow">qa-pairs<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model can be used to produce query-answer pairs which enhance search from chat prompts</span></span></td>
+                    <td class="narrow">tldr-shortener<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model is used to make summaries from web content</span></span></td>
+                    <td class="narrow">log-report<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>This model evaluates YaCy runtime logs and creates self-enhancement reports</span></span></td>
+                    
+                    <td class="narrow">thinking<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>we detect thinking only to be able to suppress thinking. thinking is not used in YaCy</span></span></td>
+                    <td class="narrow">tooling<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>tooling is required for agentic abilities.</span></span></td>
+                    <td class="narrow">vision<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>this enables image recognition in the chat</span></span></td>
+                    <td class="narrow">format<br/><span class="info"><img src="env/grafics/i16.gif" width="16" height="16" alt="info"/><span>this is required for classification</span></span></td>
+                    <td>Actions</td>
+                </tr>
+            </thead>
+            <tbody>
+        #{productionmodels}#
+            <tr class="TableCell#(dark)#Light::Dark#(/dark)#">
+                <td>#[service]#</td>
+                <td>#[model]#</td>
+                <td>#[hoststub]#</td>
+                <td>#[api_key]#</td>
+                <td>#[max_tokens]#</td>
+                
+                <td><input type="checkbox" #(search)#::checked=true#(/search)# disabled="disabled"></td>
+                <td><input type="checkbox" #(chat)#::checked=true#(/chat)#></td>
+                <td><input type="checkbox" #(translation)#::checked=true#(/translation)# disabled="disabled"></td>
+                <td><input type="checkbox" #(classification)#::checked=true#(/classification)# disabled="disabled"></td>
+                <td><input type="checkbox" #(query)#::checked=true#(/query)# disabled="disabled"></td>
+                <td><input type="checkbox" #(qapairs)#::checked=true#(/qapairs)# disabled="disabled"></td>
+                <td><input type="checkbox" #(tldr)#::checked=true#(/tldr)#></td>
+                <td><input type="checkbox" #(logreport)#::checked=true#(/logreport)#></td>
+                
+                <td>#[thinking]#</td>
+                <td>#[tooling]#</td>
+                <td>#[vision]#</td>
+                <td>#[format]#</td>
+                <td></td>
+            </tr>
+        #{/productionmodels}#
+            </tbody>
+        </table>
+    </fieldset>
+
+    #%env/templates/footer.template%#
+  </body>
+</html>

@@ -50,6 +50,33 @@
         <servlet-class>net.yacy.http.servlets.SolrServlet</servlet-class>
     </servlet>
     
+    <servlet>
+        <servlet-name>RAGProxyServlet</servlet-name>
+        <servlet-class>net.yacy.http.servlets.RAGProxyServlet</servlet-class>
+    </servlet>
+    
+    <servlet>
+        <servlet-name>OllamaTagsServlet</servlet-name>
+        <servlet-class>net.yacy.http.servlets.OllamaTagsServlet</servlet-class>
+    </servlet>
+    
+    <servlet>
+        <servlet-name>OpenAIModelsServlet</servlet-name>
+        <servlet-class>net.yacy.http.servlets.OpenAIModelsServlet</servlet-class>
+    </servlet>
+    
+    <!-- admin passthrough proxy for configured LLM endpoints; also embedded in the
+         RAGProxy/OllamaTags/OpenAIModels servlets, activated by a hoststub parameter -->
+    <servlet>
+        <servlet-name>LLMAdminProxyServlet</servlet-name>
+        <servlet-class>net.yacy.http.servlets.LLMAdminProxyServlet</servlet-class>
+    </servlet>
+
+    <servlet>
+        <servlet-name>MCPSearchServlet</servlet-name>
+        <servlet-class>net.yacy.http.servlets.MCPSearchServlet</servlet-class>
+    </servlet>
+    
     <!-- servlet to provide searchresults via proxy -->
     <servlet>
         <servlet-name>URLProxyServlet</servlet-name>
@@ -81,7 +108,39 @@
         <url-pattern>/solr/webgraph/admin/luke</url-pattern>
         <!-- uncomment this to use YaCy as remote solr -->
         <!-- <url-pattern>/solr/collection1/update</url-pattern> --> <!-- only with server.response.compress.gzip=false  -->
-    </servlet-mapping>       
+    </servlet-mapping>
+
+    <servlet-mapping>
+        <servlet-name>RAGProxyServlet</servlet-name>
+        <url-pattern>/v1/chat/completions</url-pattern>
+    </servlet-mapping>
+
+    <servlet-mapping>
+        <servlet-name>OllamaTagsServlet</servlet-name>
+        <url-pattern>/api/tags</url-pattern>
+    </servlet-mapping>
+
+    <servlet-mapping>
+        <servlet-name>OpenAIModelsServlet</servlet-name>
+        <url-pattern>/v1/models</url-pattern>
+    </servlet-mapping>
+
+    <servlet-mapping>
+        <servlet-name>LLMAdminProxyServlet</servlet-name>
+        <url-pattern>/api/pull</url-pattern>
+        <url-pattern>/api/delete</url-pattern>
+        <url-pattern>/api/show</url-pattern>
+    </servlet-mapping>
+
+    <servlet-mapping>
+        <servlet-name>MCPSearchServlet</servlet-name>
+        <url-pattern>/tools</url-pattern>
+        <url-pattern>/tools/initialize</url-pattern>
+        <url-pattern>/tools/list</url-pattern>
+        <url-pattern>/tools/list_changed</url-pattern>
+        <url-pattern>/tools/call</url-pattern>
+    </servlet-mapping>
+
     <!-- eof hardcoded mappings --> 
             
     <!-- additional (optional) mappings --> 
