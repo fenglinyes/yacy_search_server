@@ -61,15 +61,15 @@ public final class Table {
     private final TableStore store;
     private final String tableName;
     private final AccessMode accessMode;
-    private List<String> header;
-    private List<List<String>> rows;
+    /** Exclusively owned by this handle; access is guarded by its monitor. */
+    private TableStore.TableData data;
 
     Table(final TableStore store, final String tableName, final AccessMode accessMode,
             final TableStore.TableData data) {
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.tableName = Objects.requireNonNull(tableName, "tableName must not be null");
         this.accessMode = Objects.requireNonNull(accessMode, "accessMode must not be null");
-        replaceSnapshot(data);
+        this.data = data;
     }
 
     /** @return the table name including its file extension */
@@ -84,12 +84,16 @@ public final class Table {
 
     /** @return an immutable copy of the header from the current snapshot */
     public synchronized List<String> getHeader() {
-        return Collections.unmodifiableList(new ArrayList<>(this.header));
+        return Collections.unmodifiableList(new ArrayList<>(this.data.header));
     }
 
     /** @return an immutable deep copy of all rows from the current snapshot */
     public synchronized List<List<String>> getRows() {
-        return immutableRowsCopy(this.rows);
+        final List<List<String>> copy = new ArrayList<>(this.data.rows.size());
+        for (final List<String> row : this.data.rows) {
+            copy.add(Collections.unmodifiableList(new ArrayList<>(row)));
+        }
+        return Collections.unmodifiableList(copy);
     }
 
     /**
@@ -100,7 +104,7 @@ public final class Table {
      * @throws IOException when the table cannot be read or is malformed
      */
     public synchronized void reload() throws IOException {
-        replaceSnapshot(this.store.readTableData(this.tableName));
+        this.data = this.store.readTableData(this.tableName);
     }
 
     /**
@@ -120,8 +124,12 @@ public final class Table {
      */
     public synchronized void editCell(final int rowIndex, final int columnIndex, final String value)
             throws IOException {
-        requireMode(AccessMode.EDITABLE, "edit cells");
-        replaceSnapshot(this.store.editCellAndRead(this.tableName, rowIndex, columnIndex, value, snapshot()));
+        if (this.accessMode != AccessMode.EDITABLE) {
+            throw new IllegalStateException("Table access mode " + this.accessMode + " cannot edit cells");
+        }
+        // The store only reads this snapshot while we hold the handle's monitor.
+        // Adopt the freshly read and edited data only after persistence succeeds.
+        this.data = this.store.editCellAndRead(this.tableName, rowIndex, columnIndex, value, this.data);
     }
 
     /**
@@ -141,40 +149,25 @@ public final class Table {
         if (this.accessMode == AccessMode.READ_ONLY) {
             throw new IllegalStateException("Table was opened read-only; cannot append rows");
         }
-        final List<String> validatedRow = copyAndValidateRow(row, this.header.size(), "appended row");
-        this.store.addRow(this.tableName, validatedRow, this.header);
-        this.rows.add(validatedRow);
+        // The store copies and validates the caller's row, then transfers ownership
+        // to this handle only after the append and channel close have succeeded.
+        this.data.rows.add(this.store.addRow(this.tableName, row, this.data.header));
     }
 
+    /** Detached copy for exports, which continue after releasing this monitor. */
     synchronized TableStore.TableData snapshot() {
-        return new TableStore.TableData(this.header, this.rows);
-    }
-
-    private void requireMode(final AccessMode requiredMode, final String operation) {
-        if (this.accessMode != requiredMode) {
-            throw new IllegalStateException("Table access mode " + this.accessMode + " cannot " + operation);
+        final List<List<String>> rows = new ArrayList<>(this.data.rows.size());
+        for (final List<String> row : this.data.rows) {
+            rows.add(new ArrayList<>(row));
         }
-    }
-
-    private void replaceSnapshot(final TableStore.TableData data) {
-        this.header = new ArrayList<>(data.header);
-        this.rows = mutableRowsCopy(data.rows);
-    }
-
-    static List<String> validateHeader(final List<String> header) {
-        Objects.requireNonNull(header, "header must not be null");
-        if (header.isEmpty()) {
-            throw new IllegalArgumentException("Table header must contain at least one column");
-        }
-        return copyAndValidateRow(header, header.size(), "header");
+        return new TableStore.TableData(new ArrayList<>(this.data.header), rows);
     }
 
     static List<String> copyAndValidateRow(final List<String> row, final int columnCount,
             final String description) {
         Objects.requireNonNull(row, description + " must not be null");
         if (row.size() != columnCount) {
-            throw new IllegalArgumentException(description + " has " + row.size() + " cells; expected "
-                    + columnCount);
+            throw new IllegalArgumentException(description + " has " + row.size() + " cells; expected " + columnCount);
         }
         final List<String> copy = new ArrayList<>(row.size());
         for (final String cell : row) {
@@ -196,19 +189,4 @@ public final class Table {
         return value;
     }
 
-    private static List<List<String>> mutableRowsCopy(final List<? extends List<String>> source) {
-        final List<List<String>> copy = new ArrayList<>(source.size());
-        for (final List<String> row : source) {
-            copy.add(new ArrayList<>(row));
-        }
-        return copy;
-    }
-
-    private static List<List<String>> immutableRowsCopy(final List<? extends List<String>> source) {
-        final List<List<String>> copy = new ArrayList<>(source.size());
-        for (final List<String> row : source) {
-            copy.add(Collections.unmodifiableList(new ArrayList<>(row)));
-        }
-        return Collections.unmodifiableList(copy);
-    }
 }

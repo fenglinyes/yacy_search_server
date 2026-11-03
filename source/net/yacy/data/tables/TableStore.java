@@ -189,8 +189,19 @@ public final class TableStore {
      */
     public void writeTable(final String tableName, final List<String> header,
             final List<? extends List<String>> rows) throws IOException {
-        final TableData data = new TableData(header, rows);
-        writeTableData(resolveTable(tableName, true), data);
+        Objects.requireNonNull(header, "header must not be null");
+        if (header.isEmpty()) {
+            throw new IllegalArgumentException("Table header must contain at least one column");
+        }
+        // Capture and validate caller-owned collections once at the public boundary.
+        final List<String> ownedHeader = Table.copyAndValidateRow(header, header.size(), "header");
+        final List<List<String>> ownedRows = new ArrayList<>(rows.size());
+        int rowIndex = 0;
+        for (final List<String> row : rows) {
+            ownedRows.add(Table.copyAndValidateRow(row, ownedHeader.size(), "row " + rowIndex));
+            rowIndex++;
+        }
+        writeTableData(resolveTable(tableName, true), new TableData(ownedHeader, ownedRows));
     }
 
     /**
@@ -228,12 +239,63 @@ public final class TableStore {
         addRow(tableName, row, null);
     }
 
-    void addRow(final String tableName, final List<String> row, final List<String> expectedHeader) throws IOException {
+    /** Return an exclusively owned row after a successful append. The header is borrowed read-only. */
+    List<String> addRow(final String tableName, final List<String> row, final List<String> expectedHeader)
+            throws IOException {
         final Path tableFile = resolveTable(tableName);
         final Lock lock = lockFor(tableFile).writeLock();
         lock.lock();
         try {
-            appendRowFile(tableFile, row, expectedHeader);
+            checkTableFile(tableFile, true);
+
+            final List<String> header;
+            try (BufferedReader reader = Files.newBufferedReader(tableFile, StandardCharsets.UTF_8)) {
+                final String headerLine = reader.readLine();
+                if (headerLine == null) {
+                    throw malformed(tableFile, "missing header row");
+                }
+                header = splitRow(headerLine);
+            }
+
+            if (expectedHeader != null && !header.equals(expectedHeader)) {
+                throw new ConcurrentModificationException("Table columns have changed; reload and adapt the row before appending");
+            }
+            final List<String> ownedRow = Table.copyAndValidateRow(row, header.size(), "appended row");
+            final byte[] rowBytes = serializeRow(ownedRow).getBytes(StandardCharsets.UTF_8);
+
+            try (FileChannel channel = FileChannel.open(tableFile, StandardOpenOption.READ, StandardOpenOption.WRITE,
+                    LinkOption.NOFOLLOW_LINKS)) {
+                final long size = channel.size();
+                boolean needsLineBreak = false;
+                if (size > 0) {
+                    final ByteBuffer lastByte = ByteBuffer.allocate(1);
+                    channel.position(size - 1);
+                    while (lastByte.hasRemaining() && channel.read(lastByte) >= 0) {
+                        // Read the final byte completely.
+                    }
+                    lastByte.flip();
+                    if (lastByte.hasRemaining()) {
+                        final byte last = lastByte.get();
+                        needsLineBreak = last != '\n' && last != '\r';
+                    }
+                }
+
+                channel.position(size);
+                try {
+                    if (needsLineBreak) {
+                        writeFully(channel, ByteBuffer.wrap(System.lineSeparator().getBytes(StandardCharsets.UTF_8)));
+                    }
+                    writeFully(channel, ByteBuffer.wrap(rowBytes));
+                } catch (final IOException failure) {
+                    try {
+                        this.files.truncate(channel, size);
+                    } catch (final IOException rollbackFailure) {
+                        failure.addSuppressed(rollbackFailure);
+                    }
+                    throw failure;
+                }
+            }
+            return ownedRow;
         } finally {
             lock.unlock();
         }
@@ -243,6 +305,10 @@ public final class TableStore {
         return readTableDataLocked(resolveTable(tableName));
     }
 
+    /**
+     * Borrow the expected snapshot read-only while the caller holds its handle's
+     * monitor. Transfer the freshly read data to the caller only after replacement.
+     */
     TableData editCellAndRead(final String tableName, final int rowIndex, final int columnIndex,
             final String value, final TableData expectedSnapshot) throws IOException {
         final Path tableFile = resolveTable(tableName);
@@ -256,7 +322,7 @@ public final class TableStore {
             }
             data.rows.get(rowIndex).set(columnIndex, Table.validateCell(value));
             writeTableFile(tableFile, data);
-            return data.copy();
+            return data;
         } finally {
             lock.unlock();
         }
@@ -297,11 +363,9 @@ public final class TableStore {
             }
         }
 
-        try {
-            return new TableData(header, rows);
-        } catch (final IllegalArgumentException e) {
-            throw malformed(tableFile, e.getMessage());
-        }
+        // Splitting complete lines produces valid cells; widths were checked above.
+        // These freshly allocated lists can be transferred without another copy.
+        return new TableData(header, rows);
     }
 
     private void writeTableData(final Path tableFile, final TableData data) throws IOException {
@@ -314,18 +378,17 @@ public final class TableStore {
         }
     }
 
-    /** Caller must hold the table's write lock. */
+    /** Caller must hold the table's write lock and exclusively own the validated data. */
     private void writeTableFile(final Path tableFile, final TableData data) throws IOException {
-        final TableData snapshot = data.copy();
         checkTableFile(tableFile, false);
 
         Path temporaryFile = null;
         try {
             temporaryFile = Files.createTempFile(tableFile.getParent(), ".table-", ".tmp");
             try (BufferedWriter writer = this.files.openWriter(temporaryFile)) {
-                writeRow(writer, snapshot.header);
-                for (final List<String> row : snapshot.rows) {
-                    writeRow(writer, row);
+                writer.write(serializeRow(data.header));
+                for (final List<String> row : data.rows) {
+                    writer.write(serializeRow(row));
                 }
             }
             this.files.replaceAtomically(temporaryFile, tableFile);
@@ -338,64 +401,6 @@ public final class TableStore {
                 }
             }
             throw failure;
-        }
-    }
-
-    /** Caller must hold the table's write lock. */
-    private void appendRowFile(final Path tableFile, final List<String> row, final List<String> expectedHeader)
-            throws IOException {
-        checkTableFile(tableFile, true);
-
-        final List<String> header;
-        try (BufferedReader reader = Files.newBufferedReader(tableFile, StandardCharsets.UTF_8)) {
-            final String headerLine = reader.readLine();
-            if (headerLine == null) {
-                throw malformed(tableFile, "missing header row");
-            }
-            try {
-                header = Table.validateHeader(splitRow(headerLine));
-            } catch (final IllegalArgumentException e) {
-                throw malformed(tableFile, e.getMessage());
-            }
-        }
-
-        if (expectedHeader != null && !header.equals(expectedHeader)) {
-            throw new ConcurrentModificationException("Table columns have changed; reload and adapt the row before appending");
-        }
-        final List<String> validatedRow = Table.copyAndValidateRow(row, header.size(), "appended row");
-        final byte[] rowBytes = serializeRow(validatedRow).getBytes(StandardCharsets.UTF_8);
-
-        try (FileChannel channel = FileChannel.open(tableFile, StandardOpenOption.READ, StandardOpenOption.WRITE,
-                LinkOption.NOFOLLOW_LINKS)) {
-            final long size = channel.size();
-            boolean needsLineBreak = false;
-            if (size > 0) {
-                final ByteBuffer lastByte = ByteBuffer.allocate(1);
-                channel.position(size - 1);
-                while (lastByte.hasRemaining() && channel.read(lastByte) >= 0) {
-                    // Read the final byte completely.
-                }
-                lastByte.flip();
-                if (lastByte.hasRemaining()) {
-                    final byte last = lastByte.get();
-                    needsLineBreak = last != '\n' && last != '\r';
-                }
-            }
-
-            channel.position(size);
-            try {
-                if (needsLineBreak) {
-                    writeFully(channel, ByteBuffer.wrap(System.lineSeparator().getBytes(StandardCharsets.UTF_8)));
-                }
-                writeFully(channel, ByteBuffer.wrap(rowBytes));
-            } catch (final IOException failure) {
-                try {
-                    this.files.truncate(channel, size);
-                } catch (final IOException rollbackFailure) {
-                    failure.addSuppressed(rollbackFailure);
-                }
-                throw failure;
-            }
         }
     }
 
@@ -449,10 +454,6 @@ public final class TableStore {
         return row;
     }
 
-    private static void writeRow(final BufferedWriter writer, final List<String> row) throws IOException {
-        writer.write(serializeRow(row));
-    }
-
     private static String serializeRow(final List<String> row) {
         final StringBuilder serialized = new StringBuilder();
         for (int column = 0; column < row.size(); column++) {
@@ -496,23 +497,18 @@ public final class TableStore {
         return new IOException("Malformed table " + tableFile.getFileName() + ": " + reason);
     }
 
+    /**
+     * Exclusively owned, validated table contents. The constructor takes ownership
+     * of the supplied mutable lists; callers must not retain mutable aliases.
+     */
     static final class TableData {
 
         final List<String> header;
         final List<List<String>> rows;
 
-        TableData(final List<String> header, final List<? extends List<String>> rows) {
-            this.header = Table.validateHeader(header);
-            this.rows = new ArrayList<>(rows.size());
-            int rowIndex = 0;
-            for (final List<String> row : rows) {
-                this.rows.add(Table.copyAndValidateRow(row, this.header.size(), "row " + rowIndex));
-                rowIndex++;
-            }
-        }
-
-        private TableData copy() {
-            return new TableData(this.header, this.rows);
+        TableData(final List<String> header, final List<List<String>> rows) {
+            this.header = header;
+            this.rows = rows;
         }
     }
 }

@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -185,6 +186,47 @@ public class TableStoreFileAccessTest {
                 () -> store.writeTable("directory", Collections.singletonList("name"), Collections.emptyList()));
         assertTrue(Files.isDirectory(directory));
         assertNoTemporaryFiles();
+    }
+
+    @Test
+    public void replacementOwnsCallerDataBeforeOpeningTheWriter() throws IOException {
+        final List<String> header = new ArrayList<>(Arrays.asList("name", "city"));
+        final List<String> row = new ArrayList<>(Arrays.asList("Ada", "London"));
+        final List<List<String>> rows = new ArrayList<>(Collections.singletonList(row));
+        final TableStore store = new TableStore(root(), new TableStore.FileOperations() {
+            @Override
+            BufferedWriter openWriter(final Path path) throws IOException {
+                header.clear();
+                row.set(0, "changed;after;validation");
+                rows.clear();
+                return super.openWriter(path);
+            }
+        });
+        store.writeTable("people", header, rows);
+        final Table table = store.readTable("people");
+        assertEquals(Arrays.asList("name", "city"), table.getHeader());
+        assertEquals(Collections.singletonList(Arrays.asList("Ada", "London")), table.getRows());
+    }
+
+    @Test
+    public void exportKeepsItsSnapshotWhenTheSourceChangesDuringWriting() throws IOException {
+        final TableStore store = initialStore();
+        final Table source = store.openTable("people", Table.AccessMode.EDITABLE);
+        final TableStore exporter = new TableStore(root(), new TableStore.FileOperations() {
+            @Override
+            BufferedWriter openWriter(final Path path) throws IOException {
+                source.addRow(Arrays.asList("Grace", "New York"));
+                source.editCell(0, 1, "Paris");
+                return super.openWriter(path);
+            }
+        });
+        exporter.writeTable("exported", source);
+        assertEquals(Collections.singletonList(Arrays.asList("Ada", "London")),
+                store.readTable("exported").getRows());
+        final List<List<String>> updated = Arrays.asList(Arrays.asList("Ada", "Paris"),
+                Arrays.asList("Grace", "New York"));
+        assertEquals(updated, source.getRows());
+        assertEquals(updated, store.readTable("people").getRows());
     }
 
     @Test

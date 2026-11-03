@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
@@ -97,6 +98,52 @@ public class TableStoreTest {
         assertEquals(1, snapshot.getRows().size());
         snapshot.reload();
         assertEquals(2, snapshot.getRows().size());
+    }
+
+    @Test
+    public void getterCopiesRemainImmutableAndIndependentAcrossMutations() throws IOException {
+        final TableStore store = new TableStore(this.temporaryFolder.getRoot());
+        store.writeTable("people", Arrays.asList("name", "city"),
+                Collections.singletonList(Arrays.asList("Ada", "London")));
+        final Table table = store.openTable("people", Table.AccessMode.EDITABLE);
+        final List<String> header = table.getHeader();
+        final List<List<String>> rows = table.getRows();
+        assertThrows(UnsupportedOperationException.class, () -> header.set(0, "changed"));
+        assertThrows(UnsupportedOperationException.class, () -> rows.add(Arrays.asList("Grace", "Paris")));
+        assertThrows(UnsupportedOperationException.class, () -> rows.get(0).set(1, "Paris"));
+
+        table.addRow(Arrays.asList("Grace", "New York"));
+        table.editCell(0, 1, "Paris");
+        assertEquals(Arrays.asList(Arrays.asList("Ada", "Paris"), Arrays.asList("Grace", "New York")),
+                table.getRows());
+        store.writeTable("people", Collections.singletonList("name"),
+                Collections.singletonList(Collections.singletonList("Katherine")));
+        table.reload();
+        assertEquals(Collections.singletonList("name"), table.getHeader());
+        assertEquals(Collections.singletonList(Collections.singletonList("Katherine")), table.getRows());
+        assertEquals(Arrays.asList("name", "city"), header);
+        assertEquals(Collections.singletonList(Arrays.asList("Ada", "London")), rows);
+    }
+
+    @Test
+    public void appendedRowsDoNotRetainCallerOwnedLists() throws IOException {
+        final TableStore store = new TableStore(this.temporaryFolder.getRoot());
+        store.writeTable("people", Arrays.asList("name", "city"), Collections.emptyList());
+        final Table table = store.openTable("people", Table.AccessMode.EDITABLE);
+        final List<String> row = new ArrayList<>(Arrays.asList("Ada", "London"));
+        table.addRow(row);
+        row.set(0, "Grace");
+        row.set(1, "New York");
+        table.addRow(row);
+        row.clear();
+
+        final List<List<String>> expected = Arrays.asList(Arrays.asList("Ada", "London"),
+                Arrays.asList("Grace", "New York"));
+        assertEquals(expected, table.getRows());
+        assertEquals(expected, store.readTable("people").getRows());
+        table.editCell(0, 1, "Paris");
+        assertEquals(Arrays.asList(Arrays.asList("Ada", "Paris"), Arrays.asList("Grace", "New York")),
+                table.getRows());
     }
 
     @Test
