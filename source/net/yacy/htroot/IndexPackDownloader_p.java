@@ -36,11 +36,12 @@ import net.yacy.server.serverSwitch;
 
 public class IndexPackDownloader_p {
 
+    private static final String[] SIZE_UNITS = {"B", "KiB", "MiB", "GiB", "TiB"};
+
     public static serverObjects respond(@SuppressWarnings("unused") final RequestHeader header, final serverObjects post, final serverSwitch env) {
-        // return variable that accumulates replacements
         final Switchboard sb = (Switchboard) env;
         final serverObjects prop = new serverObjects();
-        prop.put("reload", 0);
+        prop.put("download-complete", 0);
         prop.put("download-error", 0);
 
         if (post != null) {
@@ -55,7 +56,8 @@ public class IndexPackDownloader_p {
                         throw new IOException("pack destination must be inside the hold directory");
                     }
                     HFClient.downloadFile(dlrepoid, dlfile, holdFile);
-                    prop.put("reload", 1);
+                    prop.put("download-complete", 1);
+                    prop.putHTML("download-complete_file", dlfile);
                 } catch (final IOException e) {
                     sb.log.warn("error downloading from HuggingFace: " + e.getMessage(), e);
                     prop.put("download-error", 1);
@@ -64,11 +66,11 @@ public class IndexPackDownloader_p {
             }
         }
 
-        // show Pack folder contents
+        // List remote packs and their local import state.
         int i = 0; boolean dark = true;
-        Map<String, List<String>> hfmap;
+        Map<String, List<HFClient.FileMetadata>> hfmap;
         try {
-            hfmap = HFClient.getAllPacks(true);
+            hfmap = HFClient.getAllPacksWithMetadata(true);
         } catch (final IOException e) {
             hfmap = Collections.emptyMap();
         } catch (final InterruptedException e) {
@@ -76,25 +78,41 @@ public class IndexPackDownloader_p {
             hfmap = Collections.emptyMap();
         }
         final Map<String, String> packsMap = sb.packsMap();
-        for (final Map.Entry<String, List<String>> entry : hfmap.entrySet()) {
+        for (final Map.Entry<String, List<HFClient.FileMetadata>> entry : hfmap.entrySet()) {
             final String repoid = entry.getKey();
-            final List<String> files = entry.getValue();
-            for (final String file: files) {
-                // skip empty files
+            for (final HFClient.FileMetadata metadata : entry.getValue()) {
+                final String file = metadata.path();
+                // Skip entries without a filename.
                 if (file == null || file.isEmpty()) continue;
                 prop.put("packs-source_" + i + "_source", "Huggingface");
-                prop.put("packs-source_" + i + "_repoid", repoid);
-                prop.put("packs-source_" + i + "_repourl", "https://huggingface.co/datasets/" + repoid);
-                prop.put("packs-source_" + i + "_file", file);
+                prop.putHTML("packs-source_" + i + "_repoid", repoid);
+                prop.putHTML("packs-source_" + i + "_repourl", "https://huggingface.co/datasets/" + repoid);
+                prop.putHTML("packs-source_" + i + "_file", file);
+                final String sizePrefix = "packs-source_" + i + "_size";
+                prop.put(sizePrefix, metadata.size() >= 0);
+                if (metadata.size() >= 0) {
+                    double value = metadata.size();
+                    int unit = 0;
+                    while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
+                        value /= 1024;
+                        unit++;
+                    }
+                    prop.put(sizePrefix + "_bytes", metadata.size());
+                    if (unit == 0) prop.put(sizePrefix + "_value", metadata.size());
+                    else prop.putNum(sizePrefix + "_value", value);
+                    prop.put(sizePrefix + "_unit", SIZE_UNITS[unit]);
+                }
                 final String localPath = packsMap.get(file);
-                if (localPath == null) {
-                    prop.put("packs-source_" + i + "_process",
-                        "<a class=\"btn btn-primary\" href=\"IndexPackDownloader_p.html?dlsource=Huggingface&dlrepoid=" + repoid + "&dlfile=" + file + "\" role=\"button\">download</a>"
-                    );
-                } else {
-                    prop.put("packs-source_" + i + "_process",
-                        "file is downloaded; location: " + localPath
-                    );
+                final int state = localPath == null ? 0 : switch (localPath) {
+                    case "hold" -> 1;
+                    case "load" -> 2;
+                    case "loaded" -> 3;
+                    default -> 4;
+                };
+                prop.put("packs-source_" + i + "_state", state);
+                if (state == 0) {
+                    prop.putHTML("packs-source_" + i + "_state_repoid", repoid);
+                    prop.putHTML("packs-source_" + i + "_state_file", file);
                 }
                 prop.put("packs-source_" + i + "_dark", dark ? "1" : "0");
                 i++;
@@ -103,8 +121,6 @@ public class IndexPackDownloader_p {
         }
         prop.put("packs-source", i);
 
-
-        // return rewrite properties
         return prop;
     }
 

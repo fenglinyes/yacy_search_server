@@ -2171,18 +2171,29 @@ public final class Switchboard extends serverSwitch {
     }
 
     private boolean processPackJson(final File infile, final File outfile) {
-        // parse a file that can be generated with yacy_grid_parser
-        // see https://github.com/yacy/yacy_grid_parser/blob/master/README.md
+        final JsonListImporter current = JsonListImporter.job;
+        if (current != null && current.isActive()) return false;
         this.log.info("processing json pack " + infile);
         try {
-            final JsonListImporter importer = new JsonListImporter(infile, false, false);
-            importer.run();
+            final JsonListImporter importer = new JsonListImporter(infile, false, false, this.index.fulltext());
+            // Keep pack processing synchronous; the importer exposes its own lifecycle state.
+            importer.proceessPackJson();
+            if (importer.getImportState() == JsonListImporter.ImportState.COMPLETED) {
+                return infile.renameTo(outfile);
+            }
+        } catch (final IllegalStateException e) {
+            // Another entry point reserved the importer in the meantime. Leave this pack queued.
+            return false;
         } catch (final IOException e) {
             this.log.warn(e);
         }
-
-        final boolean moved = infile.renameTo(outfile);
-        return moved;
+        // Failed and stopped packs require an explicit retry instead of restarting every scheduler cycle.
+        try {
+            java.nio.file.Files.move(infile.toPath(), new File(this.packsHoldPath, infile.getName()).toPath());
+        } catch (final IOException e) {
+            this.log.warn("Could not return unsuccessful JSON pack to hold: " + e.getMessage());
+        }
+        return false;
     }
 
     private void processXMLPack(final InputStream is, final String name, String collection) throws IOException {

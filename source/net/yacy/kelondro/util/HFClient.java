@@ -46,6 +46,9 @@ public class HFClient {
 
     private static final String BASE = "https://huggingface.co";
 
+    /** Repository-relative path and physical file size in bytes; -1 means unknown. */
+    public record FileMetadata(String path, long size) { }
+
     public enum RepoType {
         MODEL("models"),
         DATASET("datasets"),
@@ -103,43 +106,68 @@ public class HFClient {
     }
 
     public static ArrayList<String> listFiles(final String repoId, final RepoType type) throws IOException, InterruptedException {
-        final String url = BASE + "/api/" + type.segment() + "/" + repoId;
+        final ArrayList<String> paths = new ArrayList<>();
+        for (final FileMetadata file : listFilesWithMetadata(repoId, type)) paths.add(file.path());
+        return paths;
+    }
+
+    public static ArrayList<FileMetadata> listFilesWithMetadata(final String repoId, final RepoType type)
+            throws IOException, InterruptedException {
+        // Request sizes in the repository listing, including LFS files, instead of issuing one HEAD per file.
+        final String url = BASE + "/api/" + type.segment() + "/" + repoId + "?blobs=true";
         final byte[] body;
         try (final HTTPClient hc = new HTTPClient(ClientIdentification.yacyInternetCrawlerAgent)) {
             body = hc.GETbytes(url, null, null, false);
-        }
-
-        final ObjectMapper mapper = new ObjectMapper();
-        final JsonNode root = mapper.readTree(body);
-        JsonNode filesArray = root.get("siblings");
-        if (filesArray == null) filesArray = root.get("files");
-
-        final ArrayList<String> out = new ArrayList<>();
-        if (filesArray != null && filesArray.isArray()) {
-            for (final JsonNode f : filesArray) {
-                // models/datasets commonly expose "rfilename"
-                String path = textOrNull(f.get("rfilename"));
-                if (path == null) {
-                    // fallback to "path" if present
-                    path = textOrNull(f.get("path"));
-                }
-                if (path != null) out.add(path);
+            if (hc.getStatusCode() != 200 || body == null) {
+                throw new IOException("Hugging Face returned HTTP " + hc.getStatusCode());
             }
         }
 
-        return out;
+        final JsonNode root = new ObjectMapper().readTree(body);
+        JsonNode filesArray = root == null ? null : root.get("siblings");
+        if (filesArray == null && root != null) filesArray = root.get("files");
+
+        final ArrayList<FileMetadata> files = new ArrayList<>();
+        if (filesArray != null && filesArray.isArray()) {
+            for (final JsonNode file : filesArray) {
+                String path = textOrNull(file.get("rfilename"));
+                if (path == null) path = textOrNull(file.get("path"));
+                if (path == null) continue;
+                JsonNode size = file.get("size");
+                if (size == null || !size.isIntegralNumber() || !size.canConvertToLong() || size.longValue() < 0) {
+                    size = file.path("lfs").path("size");
+                }
+                final long bytes = size != null && size.isIntegralNumber() && size.canConvertToLong()
+                        && size.longValue() >= 0 ? size.longValue() : -1;
+                files.add(new FileMetadata(path, bytes));
+            }
+        }
+        return files;
     }
 
     public static Map<String, List<String>> getAllPacks(final boolean only_jsonl) throws IOException, InterruptedException {
-        final Map<String, List<String>> map = new LinkedHashMap<>();
-        final List<String> repos = listYaCyPacks();
-        for (final String repoId : repos) {
-            final List<String> files = listFiles(repoId, only_jsonl);
-            if (!files.isEmpty()) {
-                map.put(repoId, files);
-            }
+        final Map<String, List<String>> paths = new LinkedHashMap<>();
+        for (final Map.Entry<String, List<FileMetadata>> entry : getAllPacksWithMetadata(only_jsonl).entrySet()) {
+            final List<String> files = new ArrayList<>(entry.getValue().size());
+            for (final FileMetadata file : entry.getValue()) files.add(file.path());
+            paths.put(entry.getKey(), files);
         }
-        return map;
+        return paths;
+    }
+
+    public static Map<String, List<FileMetadata>> getAllPacksWithMetadata(final boolean only_jsonl)
+            throws IOException, InterruptedException {
+        final Map<String, List<FileMetadata>> packs = new LinkedHashMap<>();
+        for (final String repoId : listYaCyPacks()) {
+            final ArrayList<FileMetadata> files = listFilesWithMetadata(repoId, RepoType.DATASET);
+            if (only_jsonl) {
+                for (int i = files.size() - 1; i >= 0; i--) {
+                    if (!files.get(i).path().contains(".jsonl")) files.remove(i);
+                }
+            }
+            if (!files.isEmpty()) packs.put(repoId, files);
+        }
+        return packs;
     }
 
     public static byte[] downloadFile(final String repoId, final String filePath) throws IOException, InterruptedException {
