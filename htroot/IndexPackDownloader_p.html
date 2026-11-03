@@ -1,10 +1,10 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "DTD/xhtml1-transitional.dtd">
 <!-- This page is only XHTML 1.0 Transitional because target is being used in a links -->
 <html xmlns="http://www.w3.org/1999/xhtml">
-#(reload)#::<meta http-equiv="REFRESH" content="5; url=/IndexPackDownloader_p.html">#(/reload)#
   <head>
     <title>YaCy '#[clientname]#': Index Pack Downloader</title>
     #%env/templates/metas.template%#
+    #(reload)#::<meta http-equiv="REFRESH" content="5; url=/IndexPackDownloader_p.html" />#(/reload)#
   </head>
   <body id="IndexControl">
     #%env/templates/header.template%#
@@ -12,6 +12,9 @@
 
     <h2>YaCy Pack Downloader</h2>
 
+    #(download-error)#::
+    <div class="alert alert-danger" role="alert"><strong>Download failed:</strong> #[message]#</div>
+    #(/download-error)#
 
     <fieldset><legend>Available Packs</legend>
         <table class="table table-striped" summary="Packs: Download Sources">

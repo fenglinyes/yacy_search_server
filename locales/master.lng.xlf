@@ -5434,6 +5434,9 @@
 
 <file original="IndexPackDownloader_p.html"  source-language="en"  datatype="html">
   <body>
+    <trans-unit id="5f539425" xml:space="preserve" approved="no" translate="yes">
+       <source>Download failed:</source>
+    </trans-unit>
     <trans-unit id="e3ffad3a" xml:space="preserve" approved="no" translate="yes">
        <source>YaCy Pack Downloader</source>
     </trans-unit>

@@ -4152,6 +4152,7 @@ Import this file by moving it to DATA/PACKS/load==Импортируйте эт�
 
 #File: IndexPackDownloader_p.html
 #---------------------------
+Download failed:==Ошибка скачивания:
 YaCy Pack Downloader==YaCy Загрузчик пакетов
 Available Packs==Доступные пакеты
 Source==Источник

@@ -20,8 +20,15 @@
 
 package net.yacy.kelondro.util;
 
+import java.io.BufferedOutputStream;
+import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URLEncoder;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,36 +52,35 @@ public class HFClient {
         SPACE("spaces");
 
         private final String pluralSegment;
-        RepoType(String s) { this.pluralSegment = s; }
+        RepoType(final String s) { this.pluralSegment = s; }
         public String segment() { return this.pluralSegment; }
     }
 
 
-    private static String textOrNull(JsonNode n) {
+    private static String textOrNull(final JsonNode n) {
         return (n != null && !n.isNull()) ? n.asText() : null;
     }
 
 
     public static List<String> listYaCyPacks() throws IOException, InterruptedException {
-        List<String> repos = listRepositories(null, RepoType.DATASET, 20, "YaCy-Pack");
-        return repos;
+        return listRepositories(null, RepoType.DATASET, 20, "YaCy-Pack");
     }
 
-    private static List<String> listRepositories(String author, RepoType type, int limit, String search) throws IOException, InterruptedException {
-        if (limit <= 0) limit = 100;
-        StringBuilder url = new StringBuilder(BASE).append("/api/").append(type.segment()).append("?limit=").append(limit);
+    private static List<String> listRepositories(final String author, final RepoType type, final int limit, final String search) throws IOException, InterruptedException {
+        final StringBuilder url = new StringBuilder(BASE).append("/api/").append(type.segment()).append("?limit=").append(limit <= 0 ? 100 : limit);
         if (author != null && !author.isBlank()) url.append("&author=").append(URLEncoder.encode(author, java.nio.charset.StandardCharsets.UTF_8));
         if (search != null && !search.isBlank()) url.append("&search=").append(URLEncoder.encode(search, java.nio.charset.StandardCharsets.UTF_8));
 
-        HTTPClient hc = new HTTPClient(ClientIdentification.yacyInternetCrawlerAgent);
-        byte[] body = hc.GETbytes(url.toString(), null, null, false);
-        hc.close();
+        final byte[] body;
+        try (final HTTPClient hc = new HTTPClient(ClientIdentification.yacyInternetCrawlerAgent)) {
+            body = hc.GETbytes(url.toString(), null, null, false);
+        }
 
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode arr = mapper.readTree(body);
-        List<String> ids = new ArrayList<>();
+        final ObjectMapper mapper = new ObjectMapper();
+        final JsonNode arr = mapper.readTree(body);
+        final List<String> ids = new ArrayList<>();
         if (arr.isArray()) {
-            for (JsonNode n : arr) {
+            for (final JsonNode n : arr) {
                 // The field is "modelId" for models, "id" for datasets/spaces; normalize both.
                 String id = textOrNull(n.get("modelId"));
                 if (id == null) id = textOrNull(n.get("id"));
@@ -84,11 +90,11 @@ public class HFClient {
         return ids;
     }
 
-    public static ArrayList<String> listFiles(String repoId, boolean only_jsonl) throws IOException, InterruptedException {
-        ArrayList<String>  files = listFiles(repoId, RepoType.DATASET);
+    public static ArrayList<String> listFiles(final String repoId, final boolean only_jsonl) throws IOException, InterruptedException {
+        final ArrayList<String> files = listFiles(repoId, RepoType.DATASET);
         if (!only_jsonl) return files;
         for (int i = files.size() - 1; i >= 0; i--) {
-            String file = files.get(i);
+            final String file = files.get(i);
             if (!file.contains(".jsonl")) {
                 files.remove(i); // remove non-jsonl files
             }
@@ -96,20 +102,21 @@ public class HFClient {
         return files;
     }
 
-    public static ArrayList<String> listFiles(String repoId, RepoType type) throws IOException, InterruptedException {
-        String url = BASE + "/api/" + type.segment() + "/" + repoId;
-        HTTPClient hc = new HTTPClient(ClientIdentification.yacyInternetCrawlerAgent);
-        byte[] body = hc.GETbytes(url, null, null, false);
-        hc.close();
+    public static ArrayList<String> listFiles(final String repoId, final RepoType type) throws IOException, InterruptedException {
+        final String url = BASE + "/api/" + type.segment() + "/" + repoId;
+        final byte[] body;
+        try (final HTTPClient hc = new HTTPClient(ClientIdentification.yacyInternetCrawlerAgent)) {
+            body = hc.GETbytes(url, null, null, false);
+        }
 
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode root = mapper.readTree(body);
+        final ObjectMapper mapper = new ObjectMapper();
+        final JsonNode root = mapper.readTree(body);
         JsonNode filesArray = root.get("siblings");
         if (filesArray == null) filesArray = root.get("files");
 
-        ArrayList<String> out = new ArrayList<>();
+        final ArrayList<String> out = new ArrayList<>();
         if (filesArray != null && filesArray.isArray()) {
-            for (JsonNode f : filesArray) {
+            for (final JsonNode f : filesArray) {
                 // models/datasets commonly expose "rfilename"
                 String path = textOrNull(f.get("rfilename"));
                 if (path == null) {
@@ -123,11 +130,11 @@ public class HFClient {
         return out;
     }
 
-    public static Map<String, List<String>> getAllPacks(boolean only_jsonl) throws IOException, InterruptedException {
-        Map<String, List<String>> map = new LinkedHashMap<>();
-        List<String> repos = listYaCyPacks();
-        for (String repoId : repos) {
-            List<String> files = listFiles(repoId, only_jsonl);
+    public static Map<String, List<String>> getAllPacks(final boolean only_jsonl) throws IOException, InterruptedException {
+        final Map<String, List<String>> map = new LinkedHashMap<>();
+        final List<String> repos = listYaCyPacks();
+        for (final String repoId : repos) {
+            final List<String> files = listFiles(repoId, only_jsonl);
             if (!files.isEmpty()) {
                 map.put(repoId, files);
             }
@@ -135,44 +142,83 @@ public class HFClient {
         return map;
     }
 
-    public static byte[] downloadFile(String repoId, String filePath) throws IOException, InterruptedException {
-        return downloadFile(repoId, RepoType.DATASET, "main", filePath);
+    public static byte[] downloadFile(final String repoId, final String filePath) throws IOException, InterruptedException {
+        final String url = downloadURL(repoId, filePath);
+        try (final HTTPClient hc = new HTTPClient(ClientIdentification.browserAgent)) {
+            hc.setRedirecting(true);
+            return hc.GETbytes(url, null, null, false);
+        }
     }
 
-    private static byte[] downloadFile(String repoId, RepoType type, String revision, String filePath) throws IOException, InterruptedException {
+    /**
+     * Stream a dataset file to disk with bounded memory, including files larger than 2 GiB.
+     * Only a complete, nonempty download replaces the destination; partial files are removed on failure.
+     *
+     * @param repoId Hugging Face dataset repository ID
+     * @param filePath file path in the repository's main revision
+     * @param destination final local file, whose parent directories are created if needed
+     * @throws IOException when the request, transfer, validation, or file operation fails
+     */
+    public static void downloadFile(final String repoId, final String filePath, final File destination) throws IOException {
+        final String url = downloadURL(repoId, filePath);
+        final Path target = destination.toPath().toAbsolutePath();
+        Files.createDirectories(target.getParent());
+        // Keep the temporary file on the same filesystem, with a suffix the Pack Manager ignores.
+        final Path temporary = Files.createTempFile(target.getParent(), "yacy-pack-", ".part");
+        try {
+            try (final HTTPClient hc = new HTTPClient(ClientIdentification.browserAgent)) {
+                hc.setRedirecting(true);
+                hc.GET(url, false);
+                if (hc.getStatusCode() != 200) {
+                    throw new IOException("Hugging Face returned HTTP " + hc.getStatusCode());
+                }
+                if (hc.getHttpResponse().getEntity() == null) {
+                    throw new IOException("downloaded file is empty");
+                }
+                final long expectedLength = hc.getHttpResponse().getEntity().getContentLength();
+                try (final OutputStream output = new BufferedOutputStream(Files.newOutputStream(temporary), 64 * 1024)) {
+                    hc.writeTo(output);
+                }
+                final long actualLength = Files.size(temporary);
+                if (actualLength == 0) throw new IOException("downloaded file is empty");
+                if (expectedLength >= 0 && actualLength != expectedLength) {
+                    throw new IOException("incomplete download: expected " + expectedLength + " bytes, received " + actualLength);
+                }
+            }
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (final AtomicMoveNotSupportedException e) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
 
+    private static String downloadURL(final String repoId, final String filePath) {
         Objects.requireNonNull(repoId);
         Objects.requireNonNull(filePath);
-        if (revision == null || revision.isBlank()) revision = "main";
-
-        // Raw file URL pattern:
-        // https://huggingface.co/{models|datasets|spaces}/{repoId}/resolve/{revision}/{filePath}
-        String url = BASE + "/" + RepoType.DATASET.segment() + "/" + repoId + "/resolve/" + revision + "/" + filePath + "?download=true";
-        HTTPClient hc = new HTTPClient(ClientIdentification.browserAgent);
-        hc.setRedirecting(true);
-        byte[] body = hc.GETbytes(url, null, null, false);
-        hc.close();
-        return body;
+        return BASE + "/datasets/" + repoId + "/resolve/main/" + filePath + "?download=true";
     }
 
     // test
-    public static void main(String[] args) throws Exception {
-        List<String> repos = listYaCyPacks();
+    public static void main(final String[] args) throws Exception {
+        final List<String> repos = listYaCyPacks();
         System.out.println("Repos: " + repos);
-        String test_repo_id = repos.isEmpty() ? null : repos.get(0);
-        ArrayList<String> all_files = test_repo_id == null ? new ArrayList<>(0) : listFiles(test_repo_id, false);
-        ArrayList<String> jsonl_files = test_repo_id == null ? new ArrayList<>(0) : listFiles(test_repo_id, true);
+        final String test_repo_id = repos.isEmpty() ? null : repos.get(0);
+        final ArrayList<String> all_files = test_repo_id == null ? new ArrayList<>(0) : listFiles(test_repo_id, false);
+        final ArrayList<String> jsonl_files = test_repo_id == null ? new ArrayList<>(0) : listFiles(test_repo_id, true);
         System.out.println("all   files in " + test_repo_id + ": " + all_files);
         System.out.println("jsonl files in " + test_repo_id + ": " + jsonl_files);
         if (!jsonl_files.isEmpty()) {
-            byte[] data = downloadFile(test_repo_id, RepoType.DATASET, "main", jsonl_files.get(0));
+            final byte[] data = downloadFile(test_repo_id, jsonl_files.get(0));
             System.out.println("Downloaded " + data.length + " bytes from " + jsonl_files.get(0) + " in " + test_repo_id);
         }
 
-        Map<String, List<String>> map = getAllPacks(true);
-        for (Map.Entry<String, List<String>> entry : map.entrySet()) {
-            String repo = entry.getKey();
-            List<String> files = entry.getValue();
+        final Map<String, List<String>> map = getAllPacks(true);
+        for (final Map.Entry<String, List<String>> entry : map.entrySet()) {
+            final String repo = entry.getKey();
+            final List<String> files = entry.getValue();
             System.out.println("Repo: " + repo + ", Files: " + files);
         }
 

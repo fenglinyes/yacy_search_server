@@ -24,12 +24,11 @@ package net.yacy.htroot;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 import net.yacy.cora.protocol.RequestHeader;
-import net.yacy.kelondro.util.FileUtils;
 import net.yacy.kelondro.util.HFClient;
 import net.yacy.search.Switchboard;
 import net.yacy.server.serverObjects;
@@ -41,40 +40,40 @@ public class IndexPackDownloader_p {
         // return variable that accumulates replacements
         final Switchboard sb = (Switchboard) env;
         final serverObjects prop = new serverObjects();
+        prop.put("reload", 0);
+        prop.put("download-error", 0);
 
         if (post != null) {
             final String dlsource = post.get("dlsource", "");
             final String dlrepoid = post.get("dlrepoid", "");
             final String dlfile = post.get("dlfile", "");
 
-            if (!dlsource.isEmpty() && !dlrepoid.isEmpty() && !dlfile.isEmpty()) {
-                if (dlsource.equals("Huggingface")) {
-                    try {
-                        final byte[] b = HFClient.downloadFile(dlrepoid, dlfile);
-                        if (b == null || b.length == 0) throw new IOException("downloaded file is empty");
-                        // save the file to the hold directory
-                        final File holdFile = new File(sb.packsHoldPath, dlfile);
-                        if (!holdFile.getParentFile().exists()) holdFile.getParentFile().mkdirs();
-                        FileUtils.copy(b, holdFile);
-                        prop.put("reload", 1);
-                    } catch (final Exception e) {
-                        sb.log.warn("error downloading from HuggingFace: " + e.getMessage(), e);
+            if ("Huggingface".equals(dlsource) && !dlrepoid.isEmpty() && !dlfile.isEmpty()) {
+                try {
+                    final File holdFile = new File(sb.packsHoldPath, dlfile).getCanonicalFile();
+                    if (!holdFile.toPath().startsWith(sb.packsHoldPath.getCanonicalFile().toPath())) {
+                        throw new IOException("pack destination must be inside the hold directory");
                     }
+                    HFClient.downloadFile(dlrepoid, dlfile, holdFile);
+                    prop.put("reload", 1);
+                } catch (final IOException e) {
+                    sb.log.warn("error downloading from HuggingFace: " + e.getMessage(), e);
+                    prop.put("download-error", 1);
+                    prop.putHTML("download-error_message", e.getMessage());
                 }
             }
         }
-
-        // set default values
-        prop.put("reload", 0);
-
 
         // show Pack folder contents
         int i = 0; boolean dark = true;
         Map<String, List<String>> hfmap;
         try {
             hfmap = HFClient.getAllPacks(true);
-        } catch (IOException|InterruptedException e) {
-            hfmap = new HashMap<>();
+        } catch (final IOException e) {
+            hfmap = Collections.emptyMap();
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            hfmap = Collections.emptyMap();
         }
         final Map<String, String> packsMap = sb.packsMap();
         for (final Map.Entry<String, List<String>> entry : hfmap.entrySet()) {
@@ -97,7 +96,7 @@ public class IndexPackDownloader_p {
                         "file is downloaded; location: " + localPath
                     );
                 }
-                prop.put("packs_source" + i + "_dark", dark ? "1" : "0");
+                prop.put("packs-source_" + i + "_dark", dark ? "1" : "0");
                 i++;
                 dark = !dark;
             }

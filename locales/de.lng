@@ -4245,6 +4245,7 @@ words/minute==Wörter/Minute
 distribute&nbsp;==verteilen&nbsp;
 #File: IndexPackDownloader_p.html
 #---------------------------
+Download failed:==Download fehlgeschlagen:
 YaCy Pack Downloader==YaCy-Paket-Downloader
 Available Packs==Verfügbare Pakete
 File==Datei

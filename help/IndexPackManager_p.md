@@ -63,6 +63,8 @@ GET or POST /IndexPackManager_p.html?delete=...&file=...&mvfrom=...&mvto=...
 
 The page should show package state, installed packages, or available package actions. Search results may change after package installation or removal.
 
+New JSON/JSONL package imports use the same URL and content metadata derivations as [JsonList Import](IndexImportJsonList_p.md). Missing enabled URL fields are computed from the document URL. The separate `CollectionConfiguration.addTextAttributes()` method derives word count, signatures, language and content dates exclusively from `text_t`, and heading counts `h1_i` through `h6_i` from the corresponding `h1_txt` through `h6_txt` fields. Additional statistics and signatures from supplied titles, descriptions, text and lists are computed independently of their schema activation. Supplied metadata, including empty values, is preserved. Existing indexed documents are not backfilled.
+
 ## Related Pages
 
 - Related transfer work is usually reached through the import/export page for the same format, the index-pack pages, or the queue/status page that reports progress.
