@@ -22,8 +22,21 @@ source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 ```
 
-Dependencies are pinned in [requirements.txt](requirements.txt). If pip builds
+Processing dependencies are pinned in [requirements.txt](requirements.txt). If pip builds
 the wikitext parser from source, a C compiler is also needed.
+
+## Release shortcuts
+
+| Command | Purpose |
+| --- | --- |
+| `python3 release.py 2026-10-01` | Downloads all configured languages, then extracts Markdown, computes term/document frequencies, and writes Parquet at ZSTD level 22. Each stage finishes for all languages before the next starts; completed outputs are skipped. |
+| `python3 combine_document_frequency.py 2026-10-01` | Sums identical terms and `_` document totals from every configured language's Parquet into `_statistics/wikipedia-combined-<date>-document-frequency.parquet`. |
+| `python3 extract_demo_dump.py 2026-10-01` | Selects English articles containing `Computer Science` in their title or text, case-insensitively, preserving Bulk record pairs in `_markdown/YaCy-Pack_scroll-common-web_wikipedia-en-demo_<yyyyMMdd>.jsonl.gz`. |
+
+The release date must match the latest completed dumps selected by the downloader.
+Existing Markdown packs skip both download and extraction. Combining and demo
+extraction refuse existing outputs. See [README_FILES.md](README_FILES.md) for
+file formats, import commands and query examples.
 
 ## From Wikipedia to statistics
 
@@ -115,18 +128,46 @@ its statistics automatically.
 
 YaCy can import these packs through `DATA/PACKS/load/`. For Elasticsearch, decompress
 and submit complete action/document pairs to `/<index>/_bulk` as NDJSON, in batches
-within the server's request-size limit. With the requested empty `index` action,
-Elasticsearch assigns IDs, so re-uploading creates additional documents.
+within the server's request-size limit. Empty `index` actions use generated IDs
+unless an ingest pipeline supplies them. The OpenSearch setup in
+[README_FILES.md](README_FILES.md) derives IDs from `url_s`, so repeat imports
+replace documents for the same URL.
 See the [Bulk API documentation](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-bulk).
 
 Markdown conversion and both statistics stages use all available CPU cores by default.
-Add `--jobs 4` to limit concurrency. Every script shows usage
-with no arguments, `-h`, or `--help`.
+Add `--jobs 4` to limit concurrency. These conversion and counting scripts show usage
+with no arguments. Every script accepts `-h` or `--help`.
 Term counting streams the pack through a bounded queue; workers decode JSON and
 count each article independently. Completed counts are written continuously,
 without keeping the whole corpus in memory.
 TF-to-DF also decodes and counts batches in parallel, then merges their counters
 in one process. Its final vocabulary stays in RAM; `--jobs 1` runs it sequentially.
+
+### Extract a Computer Science demo pack
+
+```sh
+python3 extract_demo_dump.py
+```
+
+This streams the completed English Markdown pack for `2026-10-01` and selects
+every article whose title or Markdown text contains the literal phrase
+`Computer Science`, case-insensitively. Matching is a substring search, so
+`computer sciences` also matches; separate occurrences of `computer` and `science`
+do not. Matches in URLs or other metadata do not select an article.
+
+The result is
+`_markdown/YaCy-Pack_scroll-common-web_wikipedia-en-demo_20261001.jsonl.gz`.
+It preserves each selected article's original Elasticsearch Bulk
+`{"index":{}}` action and document line, including URLs, titles, text, language,
+timestamps and any other fields. Copy the pack to `DATA/PACKS/load/` for YaCy,
+or use the same Elasticsearch Bulk import procedure described above.
+
+An optional date argument selects the snapshot:
+`python3 extract_demo_dump.py 2026-10-01`. No new downloads or XML conversion are
+needed. The script reads one article pair at a time, checks the input format,
+and reports scanned and selected article counts. Completed outputs and existing
+`.part` outputs are refused. The final file is published only after the source
+has been fully read and the gzip output has been closed successfully.
 
 ### Which articles and words are included?
 
@@ -195,7 +236,8 @@ sorts at or after `aa`, OR its document frequency exceeds 100** (Python's Unicod
 lexicographic order). For example, `aa` with count 9 and `a` with count 100 are
 omitted; `aa` with count 10 and `a` with count 101 are retained.
 Full occurrence counts remain in the JSONL. Evaluation should use a count of
-**1 for any missing term**. No document-frequency JSON is generated.
+**10 for any missing term**, matching the long-tail cutoff. No document-frequency
+JSON is generated.
 
 The TF-to-DF step also excludes terms consisting only of decimal digits after
 removing dots and commas, including `42`, `3.14`, `3,14`, and `1.234,56`.
@@ -222,3 +264,86 @@ Use `--compression-level 19` for faster writing at a lower compression level.
 The converter loads and sorts the full table in RAM, including extra sorting
 workspace. It writes to `.part` and publishes the final filename only on success.
 Existing outputs are refused; move them aside before rerunning.
+
+## Combine languages as a document-frequency heuristic
+
+```sh
+python3 combine_document_frequency.py 2026-10-01
+```
+
+This reads the document-frequency Parquet file for every language listed in
+`release.py` (currently 30). Every input for the requested date must exist;
+missing files and unfinished `.parquet.part` inputs stop the merge.
+The default output is
+`_statistics/wikipedia-combined-2026-10-01-document-frequency.parquet`.
+Use `--input-dir PATH` for another statistics directory or `--output FILE`
+for another output path. The combined filename is separate from language inputs,
+so it does not contribute to a later merge.
+
+Matching term strings contribute the **sum of their stored counts**. For example,
+`solar: 12` in one language and `solar: 25` in another produce `solar: 37`.
+Terms present in only one language keep their original counts. The reserved `_`
+row is also summed, giving the combined document total. Missing terms contribute
+zero; no fallback count, language weighting, normalization or further filtering
+is applied. Terms omitted during the original per-language filtering remain
+unavailable to this heuristic.
+
+Inputs must have unique terms sorted by term, as produced by `write_parquet.py`,
+with `term` as a UTF-8 string and `count` as an int64. The script merges sorted
+input batches and writes output row groups, without holding the combined
+vocabulary in memory. It checks schemas, ordering, counts and corpus totals;
+int64 sum overflow stops the merge.
+
+Output retains the same two columns, is sorted by term and uses prefix encoding
+and ZSTD compression at the maximum level **22**. Parquet metadata records the
+snapshot, contributing languages and aggregation rule. Existing output and
+`.part` files are refused. The final filename is published only after every
+input has been consumed and validated successfully.
+
+## Analyze document frequencies
+
+After completing the document-frequency stage, run:
+
+```sh
+python3 -m pip install -r requirements-analysis.txt
+python3 analyze_document_frequency.py 2026-10-01
+```
+
+The analyzer discovers all matching `*wiki-<date>-document-frequency.csv` files
+directly in `_statistics/`. It reads one language at a time, validates the export
+rules and computes statistics over every retained term. It does not read the
+much larger term-frequency JSONL files. CSV input is the source of analysis;
+Parquet files supply optional file-size comparisons, without content validation.
+
+Results are saved in `_statistics/_analysis/2026-10-01/`:
+
+| Location | Contents |
+| --- | --- |
+| `report.html` | Offline report with findings, figures, limitations and next evaluation steps |
+| `summary.json` | Metrics, source SHA-256 hashes, software versions and measurement definitions |
+| `graphs/` | PNG and SVG figures comparing languages, plus four diagnostic plots per language |
+| `data/summary.csv` | Corpus size, retained vocabulary, DF quantiles, IDF, token diagnostics and file sizes |
+| `data/threshold_sensitivity.csv` | Vocabulary and term–document incidence remaining after DF or prevalence cutoffs |
+| `data/top_terms.csv` | Top 100 retained terms per language, with DF, prevalence and IDF |
+| `data/longest_terms.csv`, `data/marker_terms.csv` | Samples and literal tokens for manual rendering/tokenizer audits |
+| Other `data/*.csv` | Plot data: sampled ranks, DF survival curves, IDF histograms/formulas, term lengths and prevalence bands |
+
+All analysis tables use UTF-8 and semicolon delimiters. Rank curves retain up to
+800 exact ranks per language for plotting; scalar metrics and threshold counts
+use the complete retained vocabulary. Token lengths count Unicode code points.
+Both classic `ln(N/DF)` and positive BM25 IDF
+`ln(1 + (N - DF + 0.5)/(DF + 0.5))` are evaluated as weighting scenarios.
+
+The vocabulary was already filtered during document-frequency generation.
+These outputs cannot recover excluded terms, measure query coverage or establish
+ranking improvements. The reserved `_` corpus count includes redirects and
+empty articles. The report distinguishes retained term–document incidence from
+word occurrences and document coverage, and proposes follow-up retrieval
+experiments requiring query data and relevance judgments.
+
+Use `--languages de en` to select editions, `--input-dir PATH` to read another
+statistics directory, or `--output-dir PATH` to save a separate experiment.
+Existing output directories are refused. Results are first written to a sibling
+directory ending in `.part` and renamed only after the whole analysis succeeds.
+An interrupted run leaves that directory for inspection; choose a new output
+path or move the unfinished directory aside before retrying.
